@@ -1,0 +1,4 @@
+# Optional: background removal for product shots (makes cut-outs float on the backdrop).
+# Adds ~200 MB of model downloads on first use. Without it, photos are placed in a frame instead.
+rembg>=2.0.57
+onnxruntime>=1.17

@@ -1,0 +1,601 @@
+"""Web app: the control panel for the social media manager."""
+from __future__ import annotations
+
+import json
+import threading
+import traceback
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from . import agent, brain, config, db, scheduler
+from .publishers import REGISTRY
+from .publishers import oauth as oauth_mod
+from .sources import etsy, shopify
+from .studio import backdrops, compose
+
+BASE = Path(__file__).parent
+app = FastAPI(title="Tuff Trucks Social")
+app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+app.mount("/fonts", StaticFiles(directory=BASE / "studio" / "fonts"), name="fonts")
+templates = Jinja2Templates(directory=BASE / "templates")
+
+# ------------------------------------------------------------ background jobs
+_jobs: dict[str, dict] = {}
+
+
+def run_bg(name: str, label: str, fn, *args, **kw) -> None:
+    if _jobs.get(name, {}).get("running"):
+        return
+
+    def work():
+        _jobs[name] = {"running": True, "label": label, "started": db.iso()}
+        try:
+            res = fn(*args, **kw)
+            _jobs[name] = {"running": False, "label": label, "result": res, "finished": db.iso()}
+        except Exception as e:
+            db.log(f"{label} failed: {e}\n{traceback.format_exc()[-800:]}", "error")
+            _jobs[name] = {"running": False, "label": label, "error": str(e), "finished": db.iso()}
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def running_jobs() -> list[str]:
+    return [j["label"] for j in _jobs.values() if j.get("running")]
+
+
+# ------------------------------------------------------------------ helpers
+def fmt_local(iso_s: str | None, fmt: str = "%a %b %-d · %-I:%M %p") -> str:
+    dt = db.parse_iso(iso_s)
+    return dt.astimezone(agent.tz()).strftime(fmt) if dt else "—"
+
+
+def media_url(rel: str | None) -> str:
+    if not rel:
+        return ""
+    return "/media/" + quote(rel)
+
+
+def img_src(src: str | None) -> str:
+    """URL for showing a source photo (remote URL or local file) in the browser."""
+    if not src:
+        return ""
+    if src.startswith("http"):
+        return src
+    p = Path(src)
+    try:
+        rel = p.relative_to(config.DATA_DIR)
+    except ValueError:
+        return ""
+    return media_url(str(rel))
+
+
+def connections() -> list[dict]:
+    out = []
+    enabled = set(db.get_setting("enabled_platforms") or [])
+    for key, pub in REGISTRY.items():
+        out.append({"key": key, "label": config.PLATFORM_LABELS[key], "configured": pub.configured(),
+                    "connected": pub.connected(), "enabled": key in enabled, "note": pub.status_note(),
+                    "oauth": hasattr(pub, "auth_url")})
+    return out
+
+
+def ctx(request: Request, **kw) -> dict:
+    s = db.all_settings()
+    base = {"request": request, "s": s, "cfg": config, "labels": config.PLATFORM_LABELS,
+            "kinds": config.POST_KINDS, "fmt_local": fmt_local, "media_url": media_url, "img_src": img_src,
+            "jl": db.jl, "jobs": running_jobs(), "brain_ok": brain.available(),
+            "flash": request.query_params.get("msg", ""), "nav": kw.pop("nav", "")}
+    base.update(kw)
+    return base
+
+
+def back(url: str, msg: str = "") -> RedirectResponse:
+    sep = "&" if "?" in url else "?"
+    return RedirectResponse(url + (f"{sep}msg={quote(msg)}" if msg else ""), status_code=303)
+
+
+def thumb(post: dict) -> str:
+    for t in post.get("targets") or []:
+        if t["platform"] == "instagram" and t.get("media_path"):
+            return media_url(t["media_path"])
+    for t in post.get("targets") or []:
+        if t.get("media_path"):
+            return media_url(t["media_path"])
+    return ""
+
+
+def posts_where(where: str, params: tuple = (), order: str = "scheduled_at") -> list[dict]:
+    rows = db.q(f"SELECT id FROM posts WHERE {where} ORDER BY {order}", params)
+    out = []
+    for r in rows:
+        p = agent.get_post(r["id"])
+        p["thumb"] = thumb(p)
+        out.append(p)
+    return out
+
+
+templates.env.globals.update(thumb=thumb)
+
+
+# ----------------------------------------------------------------- startup
+@app.on_event("startup")
+def startup():
+    db.conn()
+    if config.DEMO_MODE:
+        from . import demo
+        demo.seed()
+    if config.env("DISABLE_SCHEDULER", "0") != "1":
+        scheduler.start()
+
+
+# ---------------------------------------------------------------- media
+@app.get("/media/{rel:path}")
+def media(rel: str):
+    p = (config.DATA_DIR / rel).resolve()
+    if not str(p).startswith(str(config.DATA_DIR.resolve())) or not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p, headers={"Cache-Control": "no-cache"})
+
+
+# ---------------------------------------------------------------- dashboard
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    now = db.iso()
+    pending = posts_where("status = 'needs_approval'")
+    upcoming = posts_where("status IN ('approved','publishing') AND scheduled_at >= ?", (db.iso(db.utcnow() - timedelta(hours=1)),))[:12]
+    problems = posts_where("status IN ('failed','partial')", order="updated_at DESC")[:8]
+    recent = posts_where("status IN ('published','partial')", order="updated_at DESC")[:8]
+    inbox = db.q("""SELECT t.*, p.overlay_text FROM post_targets t JOIN posts p ON p.id = t.post_id
+                    WHERE t.platform='tiktok' AND t.status='sent_to_inbox' AND t.published_at >= ?
+                    ORDER BY t.published_at DESC LIMIT 6""", (db.iso(db.utcnow() - timedelta(days=3)),))
+    activity = db.q("SELECT * FROM activity ORDER BY id DESC LIMIT 25")
+    counts = {
+        "products": db.q1("SELECT COUNT(*) n FROM products WHERE status='active'")["n"],
+        "reviews": db.q1("SELECT COUNT(*) n FROM reviews WHERE hidden=0")["n"],
+        "review_photos": db.q1("SELECT COUNT(*) n FROM reviews WHERE hidden=0 AND image_url IS NOT NULL AND image_url != ''")["n"],
+        "published_7d": db.q1("SELECT COUNT(*) n FROM post_targets WHERE status IN ('published','sent_to_inbox') AND published_at >= ?",
+                              (db.iso(db.utcnow() - timedelta(days=7)),))["n"],
+    }
+    plan_note = db.q1("SELECT body FROM reports WHERE kind='plan_notes' ORDER BY id DESC LIMIT 1")
+    return templates.TemplateResponse(request, "dashboard.html", ctx(
+        request, nav="home", pending=pending, upcoming=upcoming, problems=problems, recent=recent, inbox=inbox,
+        activity=activity, counts=counts, conns=connections(), next_runs=scheduler.next_runs(),
+        plan_note=json.loads(plan_note["body"]) if plan_note else None, now=now))
+
+
+@app.post("/actions/sync")
+def action_sync():
+    run_bg("sync", "Syncing Shopify + Etsy", agent.sync_sources)
+    return back("/", "Syncing products and reviews in the background…")
+
+
+@app.post("/actions/plan")
+def action_plan(week: str = Form("next"), replace: str = Form("")):
+    start = agent.next_week_start()
+    if week == "this":
+        today = agent.local_now().date()
+        start = today - timedelta(days=today.weekday())
+    run_bg("plan", "Planning the week", agent.plan_week, start, bool(replace))
+    return back("/", "Planning the week — this takes a minute or two. Refresh to see posts appear.")
+
+
+@app.post("/actions/publish-due")
+def action_publish_due():
+    run_bg("publish", "Publishing due posts", agent.publish_due)
+    return back("/", "Checking for posts that are due…")
+
+
+@app.post("/actions/metrics")
+def action_metrics():
+    run_bg("metrics", "Fetching stats", agent.fetch_metrics)
+    return back("/insights", "Fetching the latest stats…")
+
+
+@app.post("/actions/report")
+def action_report():
+    run_bg("report", "Writing performance report", agent.weekly_report)
+    return back("/insights", "Writing the performance review…")
+
+
+@app.post("/actions/pause")
+def action_pause(on: str = Form("1")):
+    db.set_setting("posting_paused", on == "1")
+    return back("/", "All posting paused." if on == "1" else "Posting resumed.")
+
+
+@app.get("/api/jobs")
+def api_jobs():
+    return JSONResponse({"running": running_jobs()})
+
+
+# ---------------------------------------------------------------- calendar
+@app.get("/calendar", response_class=HTMLResponse)
+def calendar(request: Request, start: str = ""):
+    today = agent.local_now().date()
+    d0 = date.fromisoformat(start) if start else today - timedelta(days=today.weekday())
+    d0 = d0 - timedelta(days=d0.weekday())
+    lo = datetime.combine(d0, datetime.min.time(), tzinfo=agent.tz())
+    hi = lo + timedelta(days=7)
+    posts = posts_where("scheduled_at >= ? AND scheduled_at < ?", (db.iso(lo), db.iso(hi)))
+    days = []
+    for i in range(7):
+        d = d0 + timedelta(days=i)
+        days.append({"date": d, "is_today": d == today,
+                     "posts": [p for p in posts if db.parse_iso(p["scheduled_at"]).astimezone(agent.tz()).date() == d]})
+    return templates.TemplateResponse(request, "calendar.html", ctx(
+        request, nav="calendar", days=days, prev=(d0 - timedelta(days=7)).isoformat(),
+        next=(d0 + timedelta(days=7)).isoformat(), week_label=f"{d0:%b %-d} – {(d0 + timedelta(days=6)):%b %-d, %Y}"))
+
+
+# ---------------------------------------------------------------- posts
+@app.get("/posts/{post_id}", response_class=HTMLResponse)
+def post_detail(request: Request, post_id: int):
+    post = agent.get_post(post_id)
+    if not post:
+        raise HTTPException(404)
+    sched = db.parse_iso(post["scheduled_at"])
+    local_val = sched.astimezone(agent.tz()).strftime("%Y-%m-%dT%H:%M") if sched else ""
+    video = ""
+    tt = next((t for t in post["targets"] if t["platform"] == "tiktok"), None)
+    if tt:
+        v = agent._video_for(tt)
+        if v:
+            video = media_url(str(Path(v).relative_to(config.DATA_DIR)))
+    metrics = {t["id"]: db.q1("SELECT * FROM metrics WHERE target_id=? ORDER BY id DESC LIMIT 1", (t["id"],))
+               for t in post["targets"]}
+    return templates.TemplateResponse(request, "post.html", ctx(
+        request, nav="calendar", post=post, local_val=local_val, styles=backdrops.list_styles(),
+        video=video, metrics=metrics, photo=agent._pick_photo(post)))
+
+
+@app.post("/posts/{post_id}/save")
+async def post_save(request: Request, post_id: int):
+    form = await request.form()
+    post = agent.get_post(post_id)
+    if not post:
+        raise HTTPException(404)
+    sched = form.get("scheduled_at")
+    sched_iso = None
+    if sched:
+        sched_iso = db.iso(datetime.fromisoformat(sched).replace(tzinfo=agent.tz()))
+    old_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"))
+    db.run("UPDATE posts SET overlay_text=?, backdrop=?, title=?, scheduled_at=?, updated_at=? WHERE id=?",
+           (form.get("overlay_text", ""), form.get("backdrop", "garage"), form.get("subline", ""),
+            sched_iso, db.iso(), post_id))
+    chosen = set(form.getlist("platforms"))
+    for p in config.PLATFORMS:
+        t = next((t for t in post["targets"] if t["platform"] == p), None)
+        if p in chosen and not t:
+            db.run("INSERT INTO post_targets(post_id, platform, status) VALUES(?, ?, 'pending')", (post_id, p))
+        elif p not in chosen and t and t["status"] in ("pending", "failed"):
+            db.run("DELETE FROM post_targets WHERE id=?", (t["id"],))
+    for t in db.q("SELECT * FROM post_targets WHERE post_id=?", (post_id,)):
+        if f"caption_{t['platform']}" in form:
+            db.run("UPDATE post_targets SET caption=?, title=? WHERE id=?",
+                   (form.get(f"caption_{t['platform']}"), form.get(f"title_{t['platform']}", t["title"]), t["id"]))
+    post = agent.get_post(post_id)
+    new_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"))
+    needs_media = new_visual != old_visual or any(not t.get("media_path") for t in post["targets"])
+    if needs_media:
+        agent.render_media(post)
+    # edits to an auto-approved post put it back in your hands
+    if post["status"] == "approved" and post["approval"] == "auto":
+        db.run("UPDATE posts SET status='needs_approval', approval=NULL WHERE id=?", (post_id,))
+    action = form.get("action", "save")
+    if action == "approve":
+        return post_approve(post_id)
+    return back(f"/posts/{post_id}", "Saved." + (" Graphics re-rendered." if needs_media else ""))
+
+
+@app.post("/posts/{post_id}/approve")
+def post_approve(post_id: int):
+    post = agent.get_post(post_id)
+    if not post["scheduled_at"]:
+        return back(f"/posts/{post_id}", "Pick a date and time first.")
+    db.run("UPDATE posts SET status='approved', approval='manual', updated_at=? WHERE id=?", (db.iso(), post_id))
+    return back("/", f"Approved — goes out {fmt_local(post['scheduled_at'])}.")
+
+
+@app.post("/posts/{post_id}/unapprove")
+def post_unapprove(post_id: int):
+    db.run("UPDATE posts SET status='needs_approval', approval=NULL WHERE id=? AND status='approved'", (post_id,))
+    return back(f"/posts/{post_id}", "Moved back to drafts awaiting your OK.")
+
+
+@app.post("/posts/{post_id}/reject")
+def post_reject(post_id: int):
+    db.run("UPDATE posts SET status='rejected', updated_at=? WHERE id=?", (db.iso(), post_id))
+    return back("/", "Rejected. It won't be posted.")
+
+
+@app.post("/posts/{post_id}/delete")
+def post_delete(post_id: int):
+    agent.delete_post(post_id)
+    return back("/calendar", "Post deleted.")
+
+
+@app.post("/posts/{post_id}/redraft")
+def post_redraft(post_id: int):
+    run_bg(f"redraft{post_id}", f"Rewriting post #{post_id}", agent.build_post, post_id, True)
+    return back(f"/posts/{post_id}", "Claude is rewriting the captions… refresh in ~20 seconds.")
+
+
+@app.post("/posts/{post_id}/publish-now")
+def post_publish_now(post_id: int, platform: str = Form("")):
+    run_bg(f"pub{post_id}", f"Publishing post #{post_id}", agent.publish_post, post_id, platform or None)
+    return back(f"/posts/{post_id}", "Publishing now…")
+
+
+@app.post("/posts/{post_id}/retry")
+def post_retry(post_id: int):
+    db.run("UPDATE post_targets SET status='pending', error=NULL WHERE post_id=? AND status='failed'", (post_id,))
+    run_bg(f"pub{post_id}", f"Retrying post #{post_id}", agent.publish_post, post_id)
+    return back(f"/posts/{post_id}", "Retrying the failed platforms…")
+
+
+@app.post("/posts/{post_id}/tiktok-done")
+def post_tiktok_done(post_id: int):
+    db.run("UPDATE post_targets SET status='published' WHERE post_id=? AND platform='tiktok' AND status='sent_to_inbox'",
+           (post_id,))
+    agent._rollup_status(post_id)
+    return back("/", "Marked the TikTok draft as posted.")
+
+
+@app.post("/posts/new")
+def post_new(kind: str = Form(...), product_id: str = Form(""), review_id: str = Form(""),
+             backdrop: str = Form(""), headline: str = Form(""), source_image: str = Form(""),
+             when: str = Form("")):
+    sched = None
+    if when:
+        sched = datetime.fromisoformat(when).replace(tzinfo=agent.tz())
+    else:
+        sched = (agent.local_now() + timedelta(days=1)).replace(hour=18, minute=30, second=0, microsecond=0)
+    if not backdrop:
+        notes = {}
+        if review_id:
+            r = db.q1("SELECT photo_notes FROM reviews WHERE id=?", (review_id,))
+            notes = db.jl(r and r["photo_notes"], {}) or {}
+        backdrop = notes.get("backdrop") if notes.get("backdrop") in backdrops.list_styles() else "garage"
+    post_id = agent.create_post(kind=kind, product_id=product_id or None, review_id=review_id or None,
+                                angle="", headline=headline, backdrop=backdrop, scheduled_at=sched,
+                                created_by="manual", source_image=source_image or None)
+    run_bg(f"redraft{post_id}", f"Drafting post #{post_id}", agent.build_post, post_id, True)
+    return back(f"/posts/{post_id}", "Drafting captions and graphics… refresh in ~20 seconds.")
+
+
+# ---------------------------------------------------------------- reviews / products
+@app.get("/reviews", response_class=HTMLResponse)
+def reviews_page(request: Request, show: str = "unused"):
+    where = "hidden = 0"
+    if show == "unused":
+        where += " AND used_at IS NULL"
+    elif show == "photos":
+        where += " AND image_url IS NOT NULL AND image_url != ''"
+    elif show == "hidden":
+        where = "hidden = 1"
+    rows = db.q(f"SELECT * FROM reviews WHERE {where} ORDER BY COALESCE(photo_score,0) DESC, created_at DESC LIMIT 200")
+    for r in rows:
+        r["notes"] = db.jl(r.get("photo_notes"), {}) or {}
+    return templates.TemplateResponse(request, "reviews.html", ctx(request, nav="reviews", reviews=rows, show=show,
+                                                          etsy_ok=etsy.configured()))
+
+
+@app.post("/reviews/{rid:path}/hide")
+def review_hide(rid: str, hide: str = Form("1")):
+    db.run("UPDATE reviews SET hidden=? WHERE id=?", (1 if hide == "1" else 0, rid))
+    return back("/reviews", "Hidden — the planner won't use it." if hide == "1" else "Restored.")
+
+
+@app.get("/products", response_class=HTMLResponse)
+def products_page(request: Request, q: str = ""):
+    rows = db.q("SELECT * FROM products WHERE status='active' AND (? = '' OR title LIKE ?) "
+                "ORDER BY COALESCE(last_featured_at,'0') ASC, title", (q, f"%{q}%"))
+    return templates.TemplateResponse(request, "products.html", ctx(request, nav="products", products=rows, q=q))
+
+
+# ---------------------------------------------------------------- studio
+@app.get("/studio", response_class=HTMLResponse)
+def studio(request: Request, product_id: str = "", review_id: str = ""):
+    photos = []
+    for p in db.q("SELECT id, title, images FROM products WHERE status='active' ORDER BY title LIMIT 200"):
+        for i, u in enumerate(db.jl(p["images"])[:4]):
+            photos.append({"src": u, "label": p["title"][:60] + (f" ({i + 1})" if i else ""), "group": "Products"})
+    for r in db.q("SELECT id, text, image_url FROM reviews WHERE image_url IS NOT NULL AND image_url != '' AND hidden=0 LIMIT 100"):
+        photos.append({"src": r["image_url"], "label": "Review: " + (r["text"] or "")[:50], "group": "Review photos"})
+    for f in sorted((config.DATA_DIR / "uploads").glob("*")) if (config.DATA_DIR / "uploads").exists() else []:
+        photos.append({"src": str(f), "label": f.name, "group": "Your uploads"})
+    preselect, pre_layout = "", ""
+    if product_id:
+        p = db.q1("SELECT images FROM products WHERE id = ?", (product_id,))
+        imgs = db.jl(p["images"]) if p else []
+        preselect = imgs[0] if imgs else ""
+    elif review_id:
+        r = db.q1("SELECT image_url FROM reviews WHERE id = ?", (review_id,))
+        preselect, pre_layout = (r["image_url"] if r else "") or "", "review_photo"
+    if not preselect and photos:
+        preselect = photos[0]["src"]
+    return templates.TemplateResponse(request, "studio.html", ctx(request, nav="studio", photos=photos,
+                                                         styles=backdrops.list_styles(), formats=compose.FORMATS,
+                                                         preselect=preselect, preselect_layout=pre_layout))
+
+
+@app.get("/studio/preview")
+def studio_preview(fmt: str = "portrait", photo: str = "", backdrop: str = "garage", headline: str = "",
+                   subline: str = "", layout: str = "product", placement: str = "auto", review_text: str = "",
+                   rating: int = 5):
+    if fmt not in compose.FORMATS:
+        raise HTTPException(400)
+    spec = {"layout": layout, "photo": photo or None, "backdrop": backdrop, "headline": headline,
+            "subline": subline, "placement": placement, "review_text": review_text or None, "rating": rating}
+    return Response(compose.preview_bytes(spec, fmt), media_type="image/jpeg")
+
+
+@app.post("/studio/upload")
+async def studio_upload(file: UploadFile = File(...), kind: str = Form("photo")):
+    target = backdrops.CUSTOM_DIR if kind == "backdrop" else config.DATA_DIR / "uploads"
+    target.mkdir(parents=True, exist_ok=True)
+    name = Path(file.filename or "upload.jpg").name.replace(" ", "_")
+    (target / name).write_bytes(await file.read())
+    return back("/studio", f"Uploaded {name}" + (" as a backdrop." if kind == "backdrop" else "."))
+
+
+@app.post("/studio/save")
+def studio_save(photo: str = Form(""), backdrop: str = Form("garage"), headline: str = Form(""),
+                kind: str = Form("product_spotlight"), when: str = Form("")):
+    product_id = None
+    review_id = None
+    if photo:
+        for p in db.q("SELECT id, images FROM products"):
+            if photo in db.jl(p["images"]):
+                product_id = p["id"]
+                break
+        r = db.q1("SELECT id FROM reviews WHERE image_url = ?", (photo,))
+        if r:
+            review_id = r["id"]
+            kind = "review_photo"
+    return post_new(kind=kind, product_id=product_id or "", review_id=review_id or "", backdrop=backdrop,
+                    headline=headline, source_image=photo, when=when)
+
+
+# ---------------------------------------------------------------- insights
+@app.get("/insights", response_class=HTMLResponse)
+def insights(request: Request, days: int = 28):
+    rows = agent.insights_rows(days)
+    by_platform: dict[str, dict] = {}
+    by_kind: dict[str, dict] = {}
+    for r in rows:
+        for key, bucket in ((r["platform"], by_platform), (r["kind"], by_kind)):
+            b = bucket.setdefault(key, {"posts": 0, "engagement": 0, "impressions": 0})
+            b["posts"] += 1
+            b["engagement"] += r["engagement"] or 0
+            b["impressions"] += (r["impressions"] or r["views"] or r["reach"] or 0)
+    rep = db.q1("SELECT * FROM reports WHERE kind='weekly_performance' ORDER BY id DESC LIMIT 1")
+    return templates.TemplateResponse(request, "insights.html", ctx(
+        request, nav="insights", rows=rows, by_platform=by_platform, by_kind=by_kind, days=days,
+        report=json.loads(rep["body"]) if rep else None, report_at=rep["created_at"] if rep else None))
+
+
+# ---------------------------------------------------------------- settings
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request):
+    boards, board_err = [], ""
+    pin = REGISTRY["pinterest"]
+    if pin.connected():
+        try:
+            boards = pin.boards()
+        except Exception as e:
+            board_err = str(e)
+    meta = db.get_token("meta") or {}
+    return templates.TemplateResponse(request, "settings.html", ctx(
+        request, nav="settings", conns=connections(), boards=boards, board_err=board_err, meta=meta,
+        shopify_ok=shopify.configured(), etsy_ok=etsy.configured(), redirect=oauth_mod.redirect_uri,
+        day_keys=agent.DAY_KEYS))
+
+
+@app.post("/settings")
+async def settings_save(request: Request):
+    form = await request.form()
+    section = form.get("section")
+    if section == "safety":
+        db.set_setting("dry_run", form.get("dry_run") == "on")
+        db.set_setting("posting_paused", form.get("posting_paused") == "on")
+        db.set_setting("hold_hours", float(form.get("hold_hours") or 0))
+        db.set_setting("auto_approve_kinds", [k for k in form.getlist("auto_approve_kinds")
+                                              if k not in agent.REVIEW_KINDS])
+    elif section == "platforms":
+        db.set_setting("enabled_platforms", [p for p in config.PLATFORMS if form.get(f"enable_{p}") == "on"])
+        db.set_setting("tiktok_mode", form.get("tiktok_mode", "inbox"))
+        db.set_setting("x_allow_links", form.get("x_allow_links") == "on")
+        if form.get("pinterest_board_id") is not None:
+            db.set_setting("pinterest_board_id", form.get("pinterest_board_id", ""))
+    elif section == "cadence":
+        db.set_setting("posts_per_week", int(form.get("posts_per_week") or 5))
+        db.set_setting("review_posts_per_week", int(form.get("review_posts_per_week") or 2))
+        db.set_setting("min_review_rating", int(form.get("min_review_rating") or 5))
+        db.set_setting("posting_times", {d: form.get(f"time_{d}") or "18:00" for d in agent.DAY_KEYS})
+        db.set_setting("planning_day", form.get("planning_day", "sun"))
+        db.set_setting("planning_time", form.get("planning_time", "16:00"))
+        db.set_setting("timezone", form.get("timezone") or "America/New_York")
+        scheduler.reschedule_weekly()
+    elif section == "brand":
+        db.set_setting("brand_name", form.get("brand_name", ""))
+        db.set_setting("brand_voice", form.get("brand_voice", ""))
+        db.set_setting("brand_hashtags", [h.strip() if h.strip().startswith("#") else "#" + h.strip()
+                                          for h in (form.get("brand_hashtags") or "").replace(",", " ").split() if h.strip()])
+        db.set_setting("avoid", form.get("avoid", ""))
+        db.set_setting("accent_color", form.get("accent_color", "#1E88E5"))
+        db.set_setting("accent_color_2", form.get("accent_color_2", "#FF3D7F"))
+        db.set_setting("watermark", form.get("watermark", ""))
+    elif section == "meta":
+        old = db.get_token("meta") or {}
+        data = {"page_id": form.get("page_id", "").strip(), "ig_user_id": form.get("ig_user_id", "").strip(),
+                "access_token": form.get("access_token", "").strip() or old.get("access_token", "")}
+        db.save_token("meta", data)
+        db.delete_token("meta_page")
+    return back("/settings", "Settings saved.")
+
+
+@app.post("/settings/meta/test")
+def meta_test():
+    from .publishers.meta import _creds, _g
+    from .publishers.base import request as req
+    c = _creds()
+    r = req("GET", _g("me"), params={"access_token": c["token"], "fields": "id,name"})
+    msg = f"Meta token OK: {r.json().get('name')}" if r.status_code == 200 else f"Meta said: {r.text[:200]}"
+    if r.status_code == 200 and c["ig_user_id"]:
+        r2 = req("GET", _g(c["ig_user_id"]), params={"access_token": c["token"], "fields": "username"})
+        msg += f" · Instagram: @{r2.json().get('username')}" if r2.status_code == 200 else f" · Instagram error: {r2.text[:160]}"
+    return back("/settings", msg)
+
+
+@app.post("/settings/disconnect/{platform}")
+def disconnect(platform: str):
+    db.delete_token(platform)
+    return back("/settings", f"Disconnected {config.PLATFORM_LABELS.get(platform, platform)}.")
+
+
+@app.post("/settings/test-shopify-upload")
+def test_shopify_upload():
+    try:
+        p = config.CACHE_DIR / "upload_test.jpg"
+        compose.render_to_file({"layout": "product", "backdrop": "racing", "headline": "Upload test"}, "square", p)
+        url = shopify.upload_image(p, alt="Upload test")
+        return back("/settings", f"Shopify Files upload works: {url}")
+    except Exception as e:
+        return back("/settings", f"Shopify upload failed: {e}")
+
+
+# ---------------------------------------------------------------- oauth
+@app.get("/oauth/{platform}/start")
+def oauth_start(platform: str):
+    pub = REGISTRY.get(platform)
+    if not pub or not hasattr(pub, "auth_url"):
+        raise HTTPException(404)
+    if not pub.configured():
+        return back("/settings", f"Add the {config.PLATFORM_LABELS[platform]} app keys to .env first.")
+    return RedirectResponse(pub.auth_url())
+
+
+@app.get("/oauth/{platform}/callback")
+def oauth_callback(platform: str, code: str = "", state: str = "", error: str = "", error_description: str = ""):
+    if error:
+        return back("/settings", f"{platform} said no: {error_description or error}")
+    st = oauth_mod.pop_state(state)
+    if not st or st.get("platform") != platform:
+        return back("/settings", "That login link expired — try Connect again.")
+    pub = REGISTRY[platform]
+    try:
+        if platform == "x":
+            pub.exchange(code, st["verifier"])
+        else:
+            pub.exchange(code)
+    except Exception as e:
+        return back("/settings", f"Couldn't finish connecting {platform}: {e}")
+    db.log(f"Connected {platform}")
+    return back("/settings", f"{config.PLATFORM_LABELS[platform]} connected.")

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Calendar{% endblock %}
+{% block body %}
+<div class="spread" style="margin-bottom:14px">
+  <h1 style="margin:0">{{ week_label }}</h1>
+  <div class="row">
+    <a class="btn" href="/calendar?start={{ prev }}">← Prev</a>
+    <a class="btn" href="/calendar">This week</a>
+    <a class="btn" href="/calendar?start={{ next }}">Next →</a>
+    <form class="inline" method="post" action="/actions/plan" data-confirm="Re-plan next week? Drafts and approved posts that haven't gone out yet will be replaced.">
+      <input type="hidden" name="week" value="next"><input type="hidden" name="replace" value="1"><button>↻ Re-plan next week</button></form>
+  </div>
+</div>
+<div class="week">
+{% for d in days %}
+  <div class="day {{ 'today' if d.is_today }}">
+    <h3><span>{{ d.date.strftime('%a') }}</span><span>{{ d.date.strftime('%b %-d') }}</span></h3>
+    <div class="stack">
+    {% for p in d.posts %}{% set show_actions = false %}{% include "_card.html" %}{% else %}<small class="muted">—</small>{% endfor %}
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% endblock %}

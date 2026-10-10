@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}{{ post.overlay_text or 'Post' }}{% endblock %}
+{% block body %}
+{% set limits = {'instagram': 2200, 'facebook': 5000, 'tiktok': 2200, 'pinterest': 500, 'x': 280} %}
+<div class="spread" style="margin-bottom:14px">
+  <div>
+    <div class="row" style="margin-bottom:6px">
+      <span class="pill {{ 'pink' if post.kind in ('review','review_photo') else 'info' }}">{{ kinds[post.kind] }}</span>
+      {% if post.status == 'approved' %}<span class="pill ok">{{ 'Auto-approved' if post.approval=='auto' else 'Approved' }} · goes out {{ fmt_local(post.scheduled_at) }}</span>
+      {% elif post.status == 'needs_approval' %}<span class="pill warn">Waiting for your OK</span>
+      {% else %}<span class="pill">{{ post.status|replace('_',' ')|title }}</span>{% endif %}
+      <small>#{{ post.id }} · {{ 'planned by Claude' if post.created_by=='planner' else 'made by you' }}</small>
+    </div>
+    <h1 style="margin:0">{{ post.overlay_text or 'Untitled post' }}</h1>
+    {% if post.angle %}<small>Idea: {{ post.angle }}</small>{% endif %}
+    {% if post.needs_human_reason %}<div class="why" style="margin-top:6px">⚑ {{ post.needs_human_reason }}</div>{% endif %}
+  </div>
+  <div class="row">
+    {% if post.status == 'needs_approval' %}
+      <form class="inline" method="post" action="/posts/{{ post.id }}/approve"><button class="good">✓ Approve</button></form>
+      <form class="inline" method="post" action="/posts/{{ post.id }}/reject"><button class="danger">Reject</button></form>
+    {% elif post.status == 'approved' %}
+      <form class="inline" method="post" action="/posts/{{ post.id }}/unapprove"><button>Hold (un-approve)</button></form>
+    {% endif %}
+    {% if post.status in ('failed','partial') %}<form class="inline" method="post" action="/posts/{{ post.id }}/retry"><button class="primary">Retry failed</button></form>{% endif %}
+    {% if post.status in ('needs_approval','approved','partial','failed') %}
+    <form class="inline" method="post" action="/posts/{{ post.id }}/publish-now" data-confirm="Publish this to every selected platform right now?{{ ' (Dry-run is on, so it will only be simulated.)' if s.dry_run }}"><button>Publish now</button></form>
+    {% endif %}
+    <form class="inline" method="post" action="/posts/{{ post.id }}/redraft" data-confirm="Have Claude rewrite all captions? Your edits will be replaced."><button>✦ Rewrite captions</button></form>
+    <form class="inline" method="post" action="/posts/{{ post.id }}/delete" data-confirm="Delete this post?"><button class="danger">Delete</button></form>
+  </div>
+</div>
+
+<form method="post" action="/posts/{{ post.id }}/save">
+<div class="grid g2">
+  <div class="stack">
+    <div class="panel">
+      <div class="tabs" id="tabs">
+        {% for t in post.targets %}<button type="button" data-src="{{ media_url(t.media_path) }}" data-plat="{{ t.platform }}" class="{{ 'on' if loop.first }}">{{ labels[t.platform] }}</button>{% endfor %}
+        {% if video %}<button type="button" data-video="{{ video }}">TikTok video</button>{% endif %}
+      </div>
+      <div class="preview" id="preview">
+        {% if post.targets and post.targets[0].media_path %}<img src="{{ media_url(post.targets[0].media_path) }}" alt="preview">{% else %}<span class="muted">No graphic yet — save to render.</span>{% endif %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Graphic</h2>
+      <div class="field"><label>Headline on the image</label><input type="text" name="overlay_text" value="{{ post.overlay_text or '' }}" maxlength="60"></div>
+      <div class="field"><label>Small line (product / fitment)</label><input type="text" name="subline" value="{{ post.title or '' }}" maxlength="80"></div>
+      <div class="field"><label>Backdrop</label>
+        <select name="backdrop">{% for k, v in styles.items() %}<option value="{{ k }}" {{ 'selected' if k == post.backdrop }}>{{ v }}</option>{% endfor %}</select>
+        <div class="hint">Want more control? Open this photo in the <a href="/studio">Studio</a>.</div></div>
+      {% if photo %}<div class="hint" style="margin-top:10px">Photo: <a href="{{ img_src(photo) }}" target="_blank">source image ↗</a></div>{% endif %}
+      {% if post.review %}
+      <hr><h3>From the Etsy review</h3>
+      <div class="stars">{{ '★' * post.review.rating }}{{ '☆' * (5 - post.review.rating) }}</div>
+      <p class="quote">“{{ post.review.text }}”</p>
+      <small>{{ post.review.product_title }}</small>
+      {% endif %}
+      {% if post.product %}<hr><small>Product: <a href="{{ post.product.url }}" target="_blank">{{ post.product.title }}</a> {% if post.product.price %}· {{ post.product.price }}{% endif %}</small>{% endif %}
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="panel">
+      <h2>When &amp; where</h2>
+      <div class="grid g2">
+        <div class="field"><label>Goes out ({{ s.timezone }})</label><input type="datetime-local" name="scheduled_at" value="{{ local_val }}"></div>
+        <div class="field"><label>Platforms</label>
+          <div class="row">{% for p in cfg.PLATFORMS %}
+            {% set on = post.targets|selectattr('platform','equalto',p)|list %}
+            <label class="check"><input type="checkbox" name="platforms" value="{{ p }}" {{ 'checked' if on }}>{{ labels[p] }}</label>
+          {% endfor %}</div></div>
+      </div>
+    </div>
+
+    {% for t in post.targets %}
+    <div class="cap">
+      <div class="spread">
+        <h3 style="margin:0">{{ labels[t.platform] }}</h3>
+        <div class="row">
+          {% if t.status in ('published','sent_to_inbox') %}<span class="pill ok">{{ 'In TikTok inbox' if t.status=='sent_to_inbox' else 'Posted' }}{% if t.external_id == 'dry-run' %} (dry run){% endif %}</span>
+          {% elif t.status == 'failed' %}<span class="pill bad">Failed</span>
+          {% elif t.status == 'skipped' %}<span class="pill">Skipped</span>{% endif %}
+          {% if t.external_url %}<a href="{{ t.external_url }}" target="_blank" class="btn sm">View ↗</a>{% endif %}
+          <span class="count" data-for="c_{{ t.platform }}" data-max="{{ limits[t.platform] }}"></span>
+          <button class="sm" data-copy="c_{{ t.platform }}">Copy</button>
+        </div>
+      </div>
+      {% if t.platform == 'pinterest' %}<div class="field"><label>Pin title</label><input type="text" name="title_pinterest" value="{{ t.title or '' }}" maxlength="100"></div>{% endif %}
+      <textarea id="c_{{ t.platform }}" name="caption_{{ t.platform }}" style="min-height:{{ 90 if t.platform in ('x','tiktok') else 150 }}px">{{ t.caption or '' }}</textarea>
+      {% if t.platform == 'tiktok' and s.tiktok_mode == 'inbox' %}<div class="hint">Inbox mode: TikTok doesn't accept a caption with drafts, so copy this one when you post from the app.</div>{% endif %}
+      {% if t.platform == 'x' and not s.x_allow_links %}<div class="hint">Links are off for X (they cost ~13× more per post there).</div>{% endif %}
+      {% if t.error %}<div class="err">{{ t.error }}</div>{% endif %}
+      {% set m = metrics[t.id] %}
+      {% if m %}<div class="hint">Stats: {% for k in ['impressions','views','reach','likes','comments','shares','saves','clicks'] if m[k] is not none %}{{ k }} {{ m[k] }}{{ ' · ' if not loop.last }}{% endfor %}</div>{% endif %}
+    </div>
+    {% endfor %}
+
+    <div class="row">
+      <button class="primary" name="action" value="save">Save changes</button>
+      {% if post.status in ('needs_approval','approved') %}<button class="good" name="action" value="approve">Save &amp; approve</button>{% endif %}
+    </div>
+    {% if post.approval == 'auto' %}<small>Editing an auto-approved post moves it back to “waiting for your OK”.</small>{% endif %}
+  </div>
+</div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+const tabs = document.querySelectorAll('#tabs button'), pv = document.getElementById('preview');
+tabs.forEach(b => b.addEventListener('click', () => {
+  tabs.forEach(x => x.classList.remove('on')); b.classList.add('on');
+  pv.innerHTML = b.dataset.video ? `<video src="${b.dataset.video}" controls autoplay muted loop playsinline></video>`
+                                 : (b.dataset.src ? `<img src="${b.dataset.src}" alt="">` : '<span class="muted">Not rendered yet</span>');
+}));
+document.querySelectorAll('.count').forEach(c => {
+  const ta = document.getElementById(c.dataset.for), max = +c.dataset.max;
+  const upd = () => { const n = [...ta.value].length; c.textContent = `${n}/${max}`; c.classList.toggle('over', n > max); };
+  ta.addEventListener('input', upd); upd();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Reviews{% endblock %}
+{% block body %}
+<div class="spread" style="margin-bottom:14px">
+  <h1 style="margin:0">Etsy reviews</h1>
+  <div class="row">
+    {% for k, v in [('unused','Not used yet'),('photos','With photos'),('all','All'),('hidden','Hidden')] %}
+      <a class="btn sm {{ 'primary' if show==k }}" href="/reviews?show={{ k }}">{{ v }}</a>
+    {% endfor %}
+    <form class="inline" method="post" action="/actions/sync"><button class="sm">↻ Pull new reviews</button></form>
+  </div>
+</div>
+{% if not etsy_ok and not cfg.DEMO_MODE %}<div class="panel" style="margin-bottom:14px">Add <code>ETSY_KEYSTRING</code>, <code>ETSY_SHARED_SECRET</code> and <code>ETSY_SHOP_ID</code> to <code>.env</code> to pull reviews.</div>{% endif %}
+<p class="muted" style="margin-top:0">Photos are scored by Claude for how well they'd work as a post. Review posts always wait for your OK — the buyer's words and photo are going public under your name.</p>
+{% if reviews %}
+<div class="cards">
+{% for r in reviews %}
+  <div class="rv">
+    {% if r.image_url %}<a class="ph" href="{{ img_src(r.image_url) }}" target="_blank" style="background-image:url('{{ img_src(r.image_url) }}')"></a>
+    {% else %}<div class="noph">No photo</div>{% endif %}
+    <div class="body">
+      <div class="spread"><span class="stars">{{ '★' * r.rating }}{{ '☆' * (5 - r.rating) }}</span>
+        {% if r.photo_score %}<span class="pill {{ 'ok' if r.photo_score >= 7 else ('warn' if r.photo_score >= 4 else 'bad') }}">Photo {{ r.photo_score }}/10</span>{% endif %}</div>
+      <div class="quote">“{{ r.text }}”</div>
+      <small>{{ r.product_title }} · {{ fmt_local(r.created_at, '%b %-d, %Y') }}</small>
+      {% if r.notes.notes %}<small class="{{ 'why' if r.notes.privacy_issue }}">{{ r.notes.notes }}</small>{% endif %}
+      {% if r.used_at %}<span class="pill">Used {{ fmt_local(r.used_at, '%b %-d') }}</span>{% endif %}
+      <div class="actions row" style="margin-top:auto">
+        {% if r.image_url %}
+        <form class="inline" method="post" action="/posts/new"><input type="hidden" name="kind" value="review_photo"><input type="hidden" name="review_id" value="{{ r.id }}">
+          <button class="sm primary">Photo + backdrop post</button></form>
+        {% endif %}
+        <form class="inline" method="post" action="/posts/new"><input type="hidden" name="kind" value="review"><input type="hidden" name="review_id" value="{{ r.id }}">
+          <button class="sm">Quote card</button></form>
+        <form class="inline" method="post" action="/reviews/{{ r.id }}/hide"><input type="hidden" name="hide" value="{{ '0' if r.hidden else '1' }}">
+          <button class="sm danger">{{ 'Unhide' if r.hidden else 'Hide' }}</button></form>
+      </div>
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% else %}<div class="empty">No reviews here yet.</div>{% endif %}
+{% endblock %}

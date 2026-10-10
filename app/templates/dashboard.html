@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block body %}
+<div class="spread" style="margin-bottom:14px">
+  <h1 style="margin:0">Dashboard</h1>
+  <div class="row">
+    <form class="inline" method="post" action="/actions/sync"><button>↻ Sync Shopify + Etsy</button></form>
+    <form class="inline" method="post" action="/actions/plan"><input type="hidden" name="week" value="next"><button class="primary">✦ Plan next week</button></form>
+    <form class="inline" method="post" action="/actions/publish-due"><button>Publish due now</button></form>
+    {% if not s.posting_paused %}
+    <form class="inline" method="post" action="/actions/pause" data-confirm="Pause all posting? Nothing will publish until you resume.">
+      <input type="hidden" name="on" value="1"><button class="danger">⏸ Pause all</button></form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><b>{{ pending|length }}</b><span>waiting for your OK</span></div>
+  <div class="stat"><b>{{ upcoming|length }}</b><span>approved &amp; scheduled</span></div>
+  <div class="stat"><b>{{ counts.published_7d }}</b><span>platform posts, last 7 days</span></div>
+  <div class="stat"><b>{{ counts.review_photos }}</b><span>review photos of {{ counts.reviews }} reviews · {{ counts.products }} products</span></div>
+</div>
+
+{% if problems %}
+<div class="panel" style="margin-bottom:16px;border-color:rgba(255,90,90,.45)">
+  <h2>Needs attention</h2>
+  <div class="list">
+  {% for p in problems %}
+    <div class="li"><img src="{{ p.thumb }}" alt="">
+      <div class="grow"><a href="/posts/{{ p.id }}">{{ p.overlay_text }}</a>
+        {% for t in p.targets if t.status == 'failed' %}<div class="err">{{ labels[t.platform] }}: {{ t.error }}</div>{% endfor %}</div>
+      <form class="inline" method="post" action="/posts/{{ p.id }}/retry"><button class="sm">Retry</button></form>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if inbox %}
+<div class="panel" style="margin-bottom:16px">
+  <h2>TikTok drafts in your inbox</h2>
+  <p class="muted" style="margin-top:0">Open TikTok → inbox notification → add a sound → paste the caption → Post. Then mark it done here.</p>
+  <div class="list">
+  {% for t in inbox %}
+    <div class="li">
+      <div class="grow"><b>{{ t.overlay_text }}</b>
+        <textarea id="tt{{ t.id }}" readonly style="min-height:60px;margin-top:6px">{{ t.caption }}</textarea></div>
+      <div class="stack"><button class="sm" data-copy="tt{{ t.id }}">Copy caption</button>
+        <form method="post" action="/posts/{{ t.post_id }}/tiktok-done"><button class="sm good">Posted ✓</button></form></div>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="grid g-side">
+  <div class="stack">
+    <div class="panel">
+      <div class="spread"><h2>Waiting for your OK</h2><small>Customer reviews and anything Claude flagged always land here.</small></div>
+      {% if pending %}
+      <div class="cards">{% for p in pending %}{% set show_actions = true %}{% include "_card.html" %}{% endfor %}</div>
+      {% else %}<div class="empty">Nothing waiting. {% if not upcoming %}Hit <b>Plan next week</b> to get started.{% endif %}</div>{% endif %}
+    </div>
+
+    <div class="panel">
+      <div class="spread"><h2>Coming up</h2><a href="/calendar">Calendar →</a></div>
+      {% if upcoming %}
+      <div class="list">
+      {% for p in upcoming %}
+        <div class="li"><img src="{{ p.thumb }}" alt="">
+          <div class="grow"><div class="one"><a href="/posts/{{ p.id }}">{{ p.overlay_text }}</a></div>
+            <small>{{ fmt_local(p.scheduled_at) }} · {{ kinds[p.kind] }} · {{ 'auto-approved' if p.approval=='auto' else 'approved by you' }}</small></div>
+          <div class="plats">{% for t in p.targets %}<span class="plat">{{ labels[t.platform] }}</span>{% endfor %}</div>
+        </div>
+      {% endfor %}
+      </div>
+      {% else %}<div class="empty">No approved posts scheduled.</div>{% endif %}
+    </div>
+
+    {% if recent %}
+    <div class="panel">
+      <h2>Recently posted</h2>
+      <div class="list">
+      {% for p in recent %}
+        <div class="li"><img src="{{ p.thumb }}" alt="">
+          <div class="grow"><div class="one"><a href="/posts/{{ p.id }}">{{ p.overlay_text }}</a></div>
+            <small>{{ fmt_local(p.updated_at) }}</small></div>
+          <div class="plats">{% for t in p.targets %}{% if t.external_url %}<a class="plat {{ t.status }}" href="{{ t.external_url }}" target="_blank">{{ labels[t.platform] }} ↗</a>{% else %}<span class="plat {{ t.status }}">{{ labels[t.platform] }}</span>{% endif %}{% endfor %}</div>
+        </div>
+      {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="stack">
+    {% if plan_note %}
+    <div class="panel"><h2>This plan's idea</h2><small>{{ plan_note.week }}</small><p>{{ plan_note.notes }}</p></div>
+    {% endif %}
+    <div class="panel">
+      <div class="spread"><h2>Accounts</h2><a href="/settings">Manage →</a></div>
+      {% for c in conns %}
+      <div class="spread" style="padding:5px 0">
+        <span>{{ c.label }}</span>
+        {% if not c.enabled %}<span class="pill">Off</span>
+        {% elif c.connected %}<span class="pill ok">Connected</span>
+        {% elif c.configured %}<span class="pill warn">Not connected</span>
+        {% else %}<span class="pill">Not set up</span>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <div class="panel">
+      <h2>Schedule</h2>
+      <small>
+        Plans + writes next week: every {{ s.planning_day|upper }} at {{ s.planning_time }}<br>
+        {% if next_runs.weekly %}Next planning run: {{ next_runs.weekly.strftime('%a %b %-d, %-I:%M %p') }}<br>{% endif %}
+        Syncs products &amp; reviews every 6 hours · checks for due posts every 2 minutes · pulls stats every 3 hours.<br>
+        Auto-approved posts can't go out sooner than {{ s.hold_hours|int }} h after they're created, so you always get a look.
+      </small>
+    </div>
+    <div class="panel">
+      <h2>Activity</h2>
+      <div class="log">{% for a in activity %}<div class="{{ a.level }}"><time>{{ fmt_local(a.at, '%-m/%-d %-I:%M%p') }}</time>{{ a.message }}</div>{% else %}<div class="muted">Nothing yet.</div>{% endfor %}</div>
+    </div>
+  </div>
+</div>
+{% endblock %}

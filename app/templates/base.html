@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Social Manager{% endblock %} · {{ s.brand_name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+{% if jobs %}<meta http-equiv="refresh" content="12">{% endif %}
+</head>
+<body>
+<header class="top"><div class="top-in">
+  <div class="brand">TUFF <b>TRUCKS</b> <i>SOCIAL</i></div>
+  <nav>
+    <a href="/" class="{{ 'on' if nav=='home' }}">Dashboard</a>
+    <a href="/calendar" class="{{ 'on' if nav=='calendar' }}">Calendar</a>
+    <a href="/reviews" class="{{ 'on' if nav=='reviews' }}">Reviews</a>
+    <a href="/products" class="{{ 'on' if nav=='products' }}">Products</a>
+    <a href="/studio" class="{{ 'on' if nav=='studio' }}">Studio</a>
+    <a href="/insights" class="{{ 'on' if nav=='insights' }}">Insights</a>
+    <a href="/settings" class="{{ 'on' if nav=='settings' }}">Settings</a>
+  </nav>
+</div></header>
+
+<div class="banner">
+  {% if s.posting_paused %}
+  <div class="b-pause">⏸ All posting is paused. Nothing will publish.
+    <form class="inline" method="post" action="/actions/pause"><input type="hidden" name="on" value="0"><button class="sm">Resume posting</button></form></div>
+  {% elif s.dry_run %}
+  <div class="b-dry">🧪 Dry-run mode: posts go through every step except actually publishing. Turn it off in <a href="/settings">Settings</a> when you're ready.</div>
+  {% endif %}
+  {% if flash %}<div class="b-msg" style="margin-top:8px">{{ flash }}</div>{% endif %}
+  {% for j in jobs %}<div class="b-job" style="margin-top:8px">⏳ {{ j }}… this page refreshes on its own.</div>{% endfor %}
+  {% if not brain_ok %}<div class="b-dry" style="margin-top:8px">Claude isn't connected (no ANTHROPIC_API_KEY in .env), so planning and captions use simple templates.</div>{% endif %}
+</div>
+
+<main>{% block body %}{% endblock %}</main>
+
+<script>
+document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', e => {
+  e.preventDefault();
+  const el = document.getElementById(b.dataset.copy);
+  navigator.clipboard.writeText(el.value || el.textContent).then(() => { const t = b.textContent; b.textContent = 'Copied ✓'; setTimeout(() => b.textContent = t, 1400); });
+}));
+document.querySelectorAll('form[data-confirm]').forEach(f => f.addEventListener('submit', e => {
+  if (!confirm(f.dataset.confirm)) e.preventDefault();
+}));
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

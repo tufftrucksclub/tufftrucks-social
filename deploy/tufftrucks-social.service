@@ -1,0 +1,19 @@
+# Keeps the social manager running on a Raspberry Pi / Linux box, and restarts it after reboots.
+# 1. Edit User= and the two paths below to match where you put the folder.
+# 2. sudo cp deploy/tufftrucks-social.service /etc/systemd/system/
+# 3. sudo systemctl daemon-reload && sudo systemctl enable --now tufftrucks-social
+# Logs:  journalctl -u tufftrucks-social -f
+[Unit]
+Description=Tuff Trucks social media manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/tufftrucks-social
+ExecStart=/home/pi/tufftrucks-social/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block body %}
+<h1>Settings</h1>
+<div class="grid g2">
+  <div class="stack">
+    <form class="panel" method="post" action="/settings">
+      <input type="hidden" name="section" value="safety">
+      <h2>Safety</h2>
+      <label class="check"><input type="checkbox" name="dry_run" {{ 'checked' if s.dry_run }}> Dry run — simulate publishing (nothing goes public)</label>
+      <label class="check"><input type="checkbox" name="posting_paused" {{ 'checked' if s.posting_paused }}> Pause all posting</label>
+      <div class="field" style="margin-top:10px"><label>Can publish without me</label>
+        {% for k, v in kinds.items() if k not in ('review','review_photo') %}
+        <label class="check"><input type="checkbox" name="auto_approve_kinds" value="{{ k }}" {{ 'checked' if k in s.auto_approve_kinds }}> {{ v }}</label>
+        {% endfor %}
+        <div class="hint">Customer review posts always wait for you. Anything Claude isn't sure about (fitment, claims, odd source text) also waits.</div></div>
+      <div class="field"><label>Hold window (hours)</label><input type="number" name="hold_hours" min="0" step="1" value="{{ s.hold_hours|int }}" style="max-width:120px">
+        <div class="hint">An auto-approved post can't go out until at least this long after it was created — time for you to veto it.</div></div>
+      <button class="primary" style="margin-top:12px">Save</button>
+    </form>
+
+    <div class="panel">
+      <h2>Accounts</h2>
+      <div class="conn"><b>Shopify</b><span>{% if shopify_ok %}<span class="pill ok">Set in .env</span> Products, best sellers, and image hosting for posts{% else %}<span class="pill warn">Not set</span> Add SHOPIFY_* to .env{% endif %}</span>
+        {% if shopify_ok %}<form class="inline" method="post" action="/settings/test-shopify-upload"><button class="sm">Test upload</button></form>{% else %}<span></span>{% endif %}</div>
+      <div class="conn"><b>Etsy</b><span>{% if etsy_ok %}<span class="pill ok">Set in .env</span> Reviews + listings (read-only){% else %}<span class="pill warn">Not set</span> Add ETSY_* to .env{% endif %}</span><span></span></div>
+      {% for c in conns %}
+      <div class="conn">
+        <b>{{ c.label }}</b>
+        <span>
+          {% if c.connected %}<span class="pill ok">Connected</span>{% elif c.configured %}<span class="pill warn">Ready to connect</span>{% else %}<span class="pill">App keys missing</span>{% endif %}
+          {% if c.note %}<small>{{ c.note }}</small>{% endif %}
+          {% if c.oauth %}<div class="hint">Redirect URL to register: <code>{{ redirect(c.key) }}</code></div>{% endif %}
+        </span>
+        <span class="row">
+          {% if c.oauth and c.configured %}<a class="btn sm {{ '' if c.connected else 'primary' }}" href="/oauth/{{ c.key }}/start">{{ 'Reconnect' if c.connected else 'Connect' }}</a>{% endif %}
+          {% if c.oauth and c.connected %}<form class="inline" method="post" action="/settings/disconnect/{{ c.key }}"><button class="sm danger">Disconnect</button></form>{% endif %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <form class="panel" method="post" action="/settings">
+      <input type="hidden" name="section" value="meta">
+      <h2>Facebook + Instagram</h2>
+      <p class="muted" style="margin-top:0">Paste a System User token from Meta Business Settings (doesn't expire) or a long-lived Page token. See SETUP.md, step 4.</p>
+      <div class="grid g2">
+        <div class="field"><label>Facebook Page ID</label><input type="text" name="page_id" value="{{ meta.page_id or cfg.META_PAGE_ID }}"></div>
+        <div class="field"><label>Instagram user ID</label><input type="text" name="ig_user_id" value="{{ meta.ig_user_id or cfg.META_IG_USER_ID }}"></div>
+      </div>
+      <div class="field"><label>Access token</label><input type="password" name="access_token" placeholder="{{ '•••••• saved — leave blank to keep' if (meta.access_token or cfg.META_ACCESS_TOKEN) else 'EAAB…' }}"></div>
+      <div class="row" style="margin-top:12px"><button class="primary">Save</button></div>
+    </form>
+    <form method="post" action="/settings/meta/test" style="margin-top:-6px"><button class="sm">Test Meta connection</button></form>
+  </div>
+
+  <div class="stack">
+    <form class="panel" method="post" action="/settings">
+      <input type="hidden" name="section" value="platforms">
+      <h2>Platforms</h2>
+      <div class="row">{% for p in cfg.PLATFORMS %}<label class="check"><input type="checkbox" name="enable_{{ p }}" {{ 'checked' if p in s.enabled_platforms }}> {{ labels[p] }}</label>{% endfor %}</div>
+      <div class="field" style="margin-top:10px"><label>TikTok</label>
+        <select name="tiktok_mode">
+          <option value="inbox" {{ 'selected' if s.tiktok_mode=='inbox' }}>Send drafts to my TikTok inbox (works now)</option>
+          <option value="direct" {{ 'selected' if s.tiktok_mode=='direct' }}>Post directly (only after TikTok audits your app)</option>
+        </select>
+        <div class="hint">Changing this means reconnecting TikTok so it can ask for the right permission.</div></div>
+      <label class="check"><input type="checkbox" name="x_allow_links" {{ 'checked' if s.x_allow_links }}> Allow links in X posts (~$0.20 per post instead of ~$0.015)</label>
+      <div class="field"><label>Pinterest board</label>
+        {% if boards %}
+        <select name="pinterest_board_id"><option value="">— choose —</option>
+          {% for b in boards %}<option value="{{ b.id }}" {{ 'selected' if b.id == s.pinterest_board_id }}>{{ b.name }}</option>{% endfor %}</select>
+        {% else %}<input type="text" name="pinterest_board_id" value="{{ s.pinterest_board_id }}" placeholder="Connect Pinterest to pick a board">
+        {% if board_err %}<div class="err">{{ board_err }}</div>{% endif %}{% endif %}</div>
+      <button class="primary" style="margin-top:12px">Save</button>
+    </form>
+
+    <form class="panel" method="post" action="/settings">
+      <input type="hidden" name="section" value="cadence">
+      <h2>Cadence</h2>
+      <div class="grid g3">
+        <div class="field"><label>Posts / week</label><input type="number" name="posts_per_week" min="1" max="7" value="{{ s.posts_per_week }}"></div>
+        <div class="field"><label>…of them reviews</label><input type="number" name="review_posts_per_week" min="0" max="7" value="{{ s.review_posts_per_week }}"></div>
+        <div class="field"><label>Min review stars</label><input type="number" name="min_review_rating" min="1" max="5" value="{{ s.min_review_rating }}"></div>
+      </div>
+      <div class="field" style="margin-top:12px"><label>Posting time for each day</label>
+        <div class="times">
+          {% for d in day_keys %}<div><small>{{ d|upper }}</small><input type="time" name="time_{{ d }}" value="{{ s.posting_times[d] }}"></div>{% endfor %}
+        </div></div>
+      <div class="grid g3" style="margin-top:12px">
+        <div class="field"><label>Plan next week on</label><select name="planning_day">{% for d in day_keys %}<option value="{{ d }}" {{ 'selected' if d==s.planning_day }}>{{ d|upper }}</option>{% endfor %}</select></div>
+        <div class="field"><label>at</label><input type="time" name="planning_time" value="{{ s.planning_time }}"></div>
+        <div class="field"><label>Time zone</label><input type="text" name="timezone" value="{{ s.timezone }}"></div>
+      </div>
+      <button class="primary" style="margin-top:12px">Save</button>
+    </form>
+
+    <form class="panel" method="post" action="/settings">
+      <input type="hidden" name="section" value="brand">
+      <h2>Brand &amp; voice</h2>
+      <div class="field"><label>Business name</label><input type="text" name="brand_name" value="{{ s.brand_name }}"></div>
+      <div class="field"><label>How you sound</label><textarea name="brand_voice">{{ s.brand_voice }}</textarea></div>
+      <div class="field"><label>Hashtags to always use</label><input type="text" name="brand_hashtags" value="{{ s.brand_hashtags|join(' ') }}"></div>
+      <div class="field"><label>Never do this</label><textarea name="avoid" style="min-height:80px">{{ s.avoid }}</textarea></div>
+      <div class="grid g3">
+        <div class="field"><label>Accent 1</label><input type="text" name="accent_color" value="{{ s.accent_color }}"></div>
+        <div class="field"><label>Accent 2</label><input type="text" name="accent_color_2" value="{{ s.accent_color_2 }}"></div>
+        <div class="field"><label>Watermark</label><input type="text" name="watermark" value="{{ s.watermark }}"></div>
+      </div>
+      <button class="primary" style="margin-top:12px">Save</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

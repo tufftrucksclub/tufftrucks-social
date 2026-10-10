@@ -1,0 +1,26 @@
+{# expects: p (post with targets + thumb) #}
+<div class="card">
+  <a class="thumb" href="/posts/{{ p.id }}" style="background-image:url('{{ p.thumb }}')"></a>
+  <div class="body">
+    <div class="spread">
+      <span class="pill {{ 'pink' if p.kind in ('review','review_photo') else 'info' }}">{{ kinds[p.kind] }}</span>
+      {% if p.status == 'approved' %}<span class="pill ok">{{ 'Auto-approved' if p.approval == 'auto' else 'Approved' }}</span>
+      {% elif p.status == 'needs_approval' %}<span class="pill warn">Needs OK</span>
+      {% elif p.status == 'published' %}<span class="pill ok">Posted</span>
+      {% elif p.status in ('failed','partial') %}<span class="pill bad">{{ p.status|title }}</span>
+      {% elif p.status == 'rejected' %}<span class="pill">Rejected</span>
+      {% else %}<span class="pill">{{ p.status|replace('_',' ')|title }}</span>{% endif %}
+    </div>
+    <a class="title" href="/posts/{{ p.id }}">{{ p.overlay_text or 'Untitled' }}</a>
+    <small>{{ fmt_local(p.scheduled_at) }}</small>
+    {% if p.needs_human_reason %}<div class="why">⚑ {{ p.needs_human_reason }}</div>{% endif %}
+    <div class="plats">{% for t in p.targets %}<span class="plat {{ t.status }}" title="{{ t.status }}">{{ labels[t.platform] }}</span>{% endfor %}</div>
+    {% if show_actions and p.status == 'needs_approval' %}
+    <div class="actions">
+      <form class="inline" method="post" action="/posts/{{ p.id }}/approve"><button class="sm good">Approve</button></form>
+      <a class="btn sm" href="/posts/{{ p.id }}">Edit</a>
+      <form class="inline" method="post" action="/posts/{{ p.id }}/reject"><button class="sm danger">Reject</button></form>
+    </div>
+    {% endif %}
+  </div>
+</div>

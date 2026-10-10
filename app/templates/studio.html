@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Studio{% endblock %}
+{% block body %}
+<div class="spread" style="margin-bottom:14px">
+  <h1 style="margin:0">Studio</h1>
+  <small>Put any product or customer photo on a new backdrop and see it in every platform's size.</small>
+</div>
+<div class="grid g-side">
+  <div class="panel">
+    <h2>Preview</h2>
+    <div class="formats" id="formats">
+      {% for k, wh in formats.items() %}
+      <figure><img data-fmt="{{ k }}" alt="{{ k }}"><figcaption>{{ k|title }} · {{ wh[0] }}×{{ wh[1] }} ·
+        {{ {'portrait':'Instagram','square':'Facebook','story':'TikTok','pin':'Pinterest','landscape':'X'}[k] }}</figcaption></figure>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="stack">
+    <form class="panel" id="ctl" method="post" action="/studio/save">
+      <div class="field"><label>Photo</label>
+        <select name="photo" id="photo">
+          <option value="">— no photo (quote card / text only) —</option>
+          {% for g in photos|groupby('group') %}<optgroup label="{{ g.grouper }}">
+            {% for p in g.list %}<option value="{{ p.src }}">{{ p.label }}</option>{% endfor %}</optgroup>{% endfor %}
+        </select></div>
+      <div class="grid g2" style="margin-top:12px">
+        <div class="field"><label>Layout</label>
+          <select name="layout" id="layout"><option value="product">Product shot</option><option value="review_photo">Photo + review quote</option><option value="review_card">Review quote card</option></select></div>
+        <div class="field"><label>Photo placement</label>
+          <select name="placement" id="placement"><option value="auto">Auto</option><option value="cutout">Cut out (remove background)</option><option value="framed">Framed photo</option></select></div>
+      </div>
+      <div class="field" style="margin-top:12px"><label>Headline</label><input type="text" name="headline" id="headline" value="Made to order for your ride" maxlength="60"></div>
+      <div class="field"><label>Small line</label><input type="text" name="subline" id="subline" value="Flex-Fit Tow Hook Covers" maxlength="80"></div>
+      <div class="field" id="rvwrap"><label>Review quote</label><textarea name="review_text" id="review_text" style="min-height:70px">Fit perfect and the color matches my paint exactly!</textarea></div>
+      <div class="field"><label>Backdrop</label>
+        <div class="swatches">
+        {% for k, v in styles.items() %}
+          <label><input type="radio" name="backdrop" value="{{ k }}" {{ 'checked' if loop.first }}><span>
+            <img loading="lazy" src="/studio/preview?fmt=square&backdrop={{ k|urlencode }}&headline=&watermark=" alt=""><em>{{ v }}</em></span></label>
+        {% endfor %}
+        </div>
+        <div class="hint">“Your photo” backdrops come from files you upload below — shots of your shop, a trail, a truck meet.</div>
+      </div>
+      <hr>
+      <div class="grid g2">
+        <div class="field"><label>Post as</label>
+          <select name="kind"><option value="product_spotlight">Product spotlight</option><option value="behind_scenes">Behind the scenes</option><option value="promo">Promo</option><option value="custom">Custom</option></select>
+          <div class="hint">Customer photos become review posts automatically.</div></div>
+        <div class="field"><label>When</label><input type="datetime-local" name="when"></div>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="primary">Make it a post →</button><small>Claude writes the captions; it waits for your OK.</small></div>
+    </form>
+
+    <div class="panel">
+      <h2>Upload</h2>
+      <form method="post" action="/studio/upload" enctype="multipart/form-data" class="stack">
+        <input type="file" name="file" accept="image/*" required>
+        <div class="row">
+          <label class="check"><input type="radio" name="kind" value="photo" checked> Photo to post</label>
+          <label class="check"><input type="radio" name="kind" value="backdrop"> New backdrop</label>
+          <button>Upload</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const ctl = document.getElementById('ctl');
+const preselect = {{ preselect|tojson }};
+if (preselect) { document.getElementById('photo').value = preselect; }
+if (preselect && {{ (preselect_layout or '')|tojson }}) { document.getElementById('layout').value = {{ (preselect_layout or '')|tojson }}; }
+let timer;
+function refresh() {
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    const f = new FormData(ctl), q = new URLSearchParams();
+    ['photo','layout','placement','headline','subline','review_text','backdrop'].forEach(k => q.set(k, f.get(k) || ''));
+    if (f.get('layout') === 'product') q.set('review_text', '');
+    document.getElementById('rvwrap').style.display = f.get('layout') === 'product' ? 'none' : '';
+    document.querySelectorAll('#formats img').forEach(img => { q.set('fmt', img.dataset.fmt); img.src = '/studio/preview?' + q.toString(); });
+  }, 350);
+}
+ctl.addEventListener('input', refresh); ctl.addEventListener('change', refresh); refresh();
+</script>
+{% endblock %}

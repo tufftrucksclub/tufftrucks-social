@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Insights{% endblock %}
+{% block body %}
+<div class="spread" style="margin-bottom:14px">
+  <h1 style="margin:0">Insights · last {{ days }} days</h1>
+  <div class="row">
+    {% for d in [7, 28, 90] %}<a class="btn sm {{ 'primary' if days==d }}" href="/insights?days={{ d }}">{{ d }} days</a>{% endfor %}
+    <form class="inline" method="post" action="/actions/metrics"><button class="sm">↻ Fetch stats</button></form>
+    <form class="inline" method="post" action="/actions/report"><button class="sm primary">✦ Ask Claude what's working</button></form>
+  </div>
+</div>
+
+{% if report %}
+<div class="panel" style="margin-bottom:16px">
+  <div class="spread"><h2>What's working</h2><small>{{ fmt_local(report_at) }}</small></div>
+  <div class="md" style="white-space:pre-wrap">{{ report.summary }}</div>
+  <div class="grid g2" style="margin-top:10px">
+    <div><h3>Do more</h3><ul>{% for x in report.do_more %}<li>{{ x }}</li>{% endfor %}</ul></div>
+    <div><h3>Do less</h3><ul>{% for x in report.do_less %}<li>{{ x }}</li>{% endfor %}</ul></div>
+  </div>
+  <small>The planner reads this before planning next week.</small>
+</div>
+{% endif %}
+
+<div class="grid g2" style="margin-bottom:16px">
+  {% for title, data, lab in [('By platform', by_platform, labels), ('By post type', by_kind, kinds)] %}
+  <div class="panel"><h2>{{ title }}</h2>
+    {% if data %}
+    {% set top = (data.values()|map(attribute='engagement')|max) or 1 %}
+    <table><tr><th></th><th class="num">Posts</th><th class="num">Engagement</th><th class="num">Avg / post</th><th class="num">Seen</th></tr>
+    {% for k, v in data.items()|sort(attribute='1.engagement', reverse=true) %}
+      <tr><td>{{ lab.get(k, k) }}
+        <div style="height:6px;border-radius:3px;background:var(--blue);margin-top:4px;width:{{ (100 * v.engagement / top)|round(0) }}%"></div></td>
+        <td class="num">{{ v.posts }}</td><td class="num">{{ v.engagement }}</td>
+        <td class="num">{{ (v.engagement / v.posts)|round(1) }}</td><td class="num">{{ v.impressions or '—' }}</td></tr>
+    {% endfor %}
+    </table>
+    {% else %}<div class="empty">No live posts with stats yet.</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="panel">
+  <h2>Every post</h2>
+  {% if rows %}
+  <div class="scroll"><table>
+    <tr><th>Posted</th><th>Post</th><th>Platform</th><th class="num">Seen</th><th class="num">Likes</th><th class="num">Comments</th><th class="num">Shares</th><th class="num">Saves</th><th class="num">Clicks</th><th class="num">Engagement</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ fmt_local(r.published_at, '%b %-d') }}</td>
+      <td><a href="/posts/{{ r.post_id }}">{{ r.headline }}</a><br><small>{{ kinds[r.kind] }} · {{ r.backdrop }}</small></td>
+      <td>{% if r.external_url %}<a href="{{ r.external_url }}" target="_blank">{{ labels[r.platform] }} ↗</a>{% else %}{{ labels[r.platform] }}{% endif %}</td>
+      <td class="num">{{ r.impressions or r.views or r.reach or '—' }}</td>
+      <td class="num">{{ r.likes if r.likes is not none else '—' }}</td><td class="num">{{ r.comments if r.comments is not none else '—' }}</td>
+      <td class="num">{{ r.shares if r.shares is not none else '—' }}</td><td class="num">{{ r.saves if r.saves is not none else '—' }}</td>
+      <td class="num">{{ r.clicks if r.clicks is not none else '—' }}</td><td class="num"><b>{{ r.engagement }}</b></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<div class="empty">Stats show up here once posts are live (dry-run posts aren't counted).</div>{% endif %}
+</div>
+{% endblock %}
