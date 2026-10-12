@@ -72,6 +72,9 @@ PUBLIC_BASE_URL = env("PUBLIC_BASE_URL", "http://localhost:8420").rstrip("/")
 
 DEMO_MODE = env("DEMO_MODE", "0") == "1"
 PORT = int(env("PORT", "8420"))
+# 0.0.0.0 accepts connections from the network; the Windows start scripts set 127.0.0.1 so only
+# this computer (and Tailscale's https address, which proxies from it) can connect.
+HOST = env("HOST", "0.0.0.0")
 
 PLATFORMS = ["instagram", "facebook", "tiktok", "pinterest", "x"]
 PLATFORM_LABELS = {

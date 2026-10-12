@@ -4,5 +4,6 @@ import uvicorn
 from app import config
 
 if __name__ == "__main__":
-    print(f"\n  Social manager running → http://localhost:{config.PORT}  (and http://<this-computer's-IP>:{config.PORT} on your network)\n")
-    uvicorn.run("app.main:app", host="0.0.0.0", port=config.PORT, log_level="warning")
+    network = "" if config.HOST in ("127.0.0.1", "localhost") else f"  (and http://<this-computer's-IP>:{config.PORT} on your network)"
+    print(f"\n  Social manager running → http://localhost:{config.PORT}{network}\n")
+    uvicorn.run("app.main:app", host=config.HOST, port=config.PORT, log_level="warning")
