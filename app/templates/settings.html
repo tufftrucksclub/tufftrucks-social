@@ -23,6 +23,8 @@
       <h2>Accounts</h2>
       <div class="conn"><b>Shopify</b><span>{% if shopify_ok %}<span class="pill ok">Set in .env</span> Products, best sellers, and image hosting for posts{% else %}<span class="pill warn">Not set</span> Add SHOPIFY_* to .env{% endif %}</span>
         {% if shopify_ok %}<form class="inline" method="post" action="/settings/test-shopify-upload"><button class="sm">Test upload</button></form>{% else %}<span></span>{% endif %}</div>
+      <div class="conn"><b>iCloud Photos</b><span>{% if ic.connected %}<span class="pill ok">Connected</span> {{ ic.apple_id }}{% elif ic.apple_id %}<span class="pill warn">Log in again</span> {{ ic.apple_id }}{% else %}<span class="pill">Not connected</span> Your own photos, rated by Claude{% endif %}</span>
+        <a class="btn sm" href="/photos">Photos page</a></div>
       <div class="conn"><b>Etsy</b><span>{% if etsy_ok %}<span class="pill ok">Set in .env</span> Reviews + listings (read-only){% else %}<span class="pill warn">Not set</span> Add ETSY_* to .env{% endif %}</span><span></span></div>
       {% for c in conns %}
       <div class="conn">

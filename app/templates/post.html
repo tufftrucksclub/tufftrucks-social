@@ -50,13 +50,20 @@
       <div class="field"><label>Small line (product / fitment)</label><input type="text" name="subline" value="{{ post.title or '' }}" maxlength="80"></div>
       <div class="field"><label>Backdrop</label>
         <select name="backdrop">{% for k, v in styles.items() %}<option value="{{ k }}" {{ 'selected' if k == post.backdrop }}>{{ v }}</option>{% endfor %}</select>
-        <div class="hint">Want more control? Open this photo in the <a href="/studio">Studio</a>.</div></div>
+        <div class="hint">Want more control? Open this photo in the <a href="/studio{{ '?photo_id=' ~ (post.photo_id|urlencode) if post.photo_id else '' }}">Studio</a>.</div></div>
+      {% if photo %}<div class="field"><label>Photo placement</label>
+        <select name="placement">{% for k, v in placements.items() %}<option value="{{ k }}" {{ 'selected' if k == (post.placement or 'auto') }}>{{ v }}</option>{% endfor %}</select>
+        <div class="hint">“Cut out” replaces the photo's background with the backdrop above.</div></div>{% endif %}
       {% if photo %}<div class="hint" style="margin-top:10px">Photo: <a href="{{ img_src(photo) }}" target="_blank">source image ↗</a></div>{% endif %}
       {% if post.review %}
       <hr><h3>From the Etsy review</h3>
       <div class="stars">{{ '★' * post.review.rating }}{{ '☆' * (5 - post.review.rating) }}</div>
       <p class="quote">“{{ post.review.text }}”</p>
       <small>{{ post.review.product_title }}</small>
+      {% endif %}
+      {% if post.photo %}<hr><h3>From your photos</h3>
+      <small>{{ post.photo.n.description or post.photo.filename }}{% if post.photo.score %} · Claude: {{ post.photo.score }}/10{% endif %}</small>
+      {% if post.photo.n.privacy_issue %}<div class="why">⚑ May show a plate, face or personal info.</div>{% endif %}
       {% endif %}
       {% if post.product %}<hr><small>Product: <a href="{{ post.product.url }}" target="_blank">{{ post.product.title }}</a> {% if post.product.price %}· {{ post.product.price }}{% endif %}</small>{% endif %}
     </div>

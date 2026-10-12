@@ -22,13 +22,13 @@
         <select name="photo" id="photo">
           <option value="">— no photo (quote card / text only) —</option>
           {% for g in photos|groupby('group') %}<optgroup label="{{ g.grouper }}">
-            {% for p in g.list %}<option value="{{ p.src }}">{{ p.label }}</option>{% endfor %}</optgroup>{% endfor %}
+            {% for p in g.list %}<option value="{{ p.src }}" data-placement="{{ p.placement or '' }}" data-backdrop="{{ p.backdrop or '' }}">{{ p.label }}</option>{% endfor %}</optgroup>{% endfor %}
         </select></div>
       <div class="grid g2" style="margin-top:12px">
         <div class="field"><label>Layout</label>
           <select name="layout" id="layout"><option value="product">Product shot</option><option value="review_photo">Photo + review quote</option><option value="review_card">Review quote card</option></select></div>
         <div class="field"><label>Photo placement</label>
-          <select name="placement" id="placement"><option value="auto">Auto</option><option value="cutout">Cut out (remove background)</option><option value="framed">Framed photo</option></select></div>
+          <select name="placement" id="placement">{% for k, v in placements.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></div>
       </div>
       <div class="field" style="margin-top:12px"><label>Headline</label><input type="text" name="headline" id="headline" value="Made to order for your ride" maxlength="60"></div>
       <div class="field"><label>Small line</label><input type="text" name="subline" id="subline" value="Flex-Fit Tow Hook Covers" maxlength="80"></div>
@@ -45,12 +45,27 @@
       <hr>
       <div class="grid g2">
         <div class="field"><label>Post as</label>
-          <select name="kind"><option value="product_spotlight">Product spotlight</option><option value="behind_scenes">Behind the scenes</option><option value="promo">Promo</option><option value="custom">Custom</option></select>
-          <div class="hint">Customer photos become review posts automatically.</div></div>
+          <select name="kind"><option value="product_spotlight">Product spotlight</option><option value="showcase">Truck showcase</option><option value="behind_scenes">Behind the scenes</option><option value="promo">Promo</option><option value="custom">Custom</option></select>
+          <div class="hint">Customer photos become review posts, and your own photos truck showcases, automatically.</div></div>
         <div class="field"><label>When</label><input type="datetime-local" name="when"></div>
       </div>
       <div class="row" style="margin-top:12px"><button class="primary">Make it a post →</button><small>Claude writes the captions; it waits for your OK.</small></div>
     </form>
+
+    {% if bg_options %}
+    <form class="panel" method="post" action="/studio/background" id="bgform">
+      <h2>New background</h2>
+      <p class="muted" style="margin-top:0">Saves the selected photo as a new photo with its background replaced — then it's under “New backgrounds” above.
+        For a quick look first, set placement to <b>Cut out</b> and pick a backdrop.</p>
+      <input type="hidden" name="photo" id="bgphoto">
+      <div class="field"><select name="choice" id="bgchoice">
+        {% for k, v in bg_options.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+        {% if ai_bg %}<option value="scene:custom">AI scene: describe your own…</option>{% endif %}
+      </select></div>
+      <div class="field" id="bgcustom" style="display:none"><input type="text" name="custom" placeholder="e.g. a muddy creek crossing at sunset"></div>
+      <div class="row" style="margin-top:10px"><button>Make it</button><small id="bghint">Works on photos under “Your photos”.</small></div>
+    </form>
+    {% endif %}
 
     <div class="panel">
       <h2>Upload</h2>
@@ -69,8 +84,23 @@
 {% block scripts %}
 <script>
 const ctl = document.getElementById('ctl');
+const photoSel = document.getElementById('photo');
+function applyPhotoDefaults() {
+  const o = photoSel.selectedOptions[0];
+  if (!o || !o.dataset.placement) return;
+  document.getElementById('placement').value = o.dataset.placement;
+  const r = o.dataset.backdrop && ctl.querySelector(`input[name=backdrop][value="${CSS.escape(o.dataset.backdrop)}"]`);
+  if (r) r.checked = true;
+}
+photoSel.addEventListener('change', applyPhotoDefaults);
+const bgform = document.getElementById('bgform');
+if (bgform) {
+  bgform.addEventListener('submit', () => { document.getElementById('bgphoto').value = photoSel.value; });
+  document.getElementById('bgchoice').addEventListener('change', e => {
+    document.getElementById('bgcustom').style.display = e.target.value === 'scene:custom' ? '' : 'none'; });
+}
 const preselect = {{ preselect|tojson }};
-if (preselect) { document.getElementById('photo').value = preselect; }
+if (preselect) { photoSel.value = preselect; applyPhotoDefaults(); }
 if (preselect && {{ (preselect_layout or '')|tojson }}) { document.getElementById('layout').value = {{ (preselect_layout or '')|tojson }}; }
 let timer;
 function refresh() {

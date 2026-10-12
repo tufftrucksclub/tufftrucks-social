@@ -15,9 +15,11 @@
     <a href="/calendar" class="{{ 'on' if nav=='calendar' }}">Calendar</a>
     <a href="/reviews" class="{{ 'on' if nav=='reviews' }}">Reviews</a>
     <a href="/products" class="{{ 'on' if nav=='products' }}">Products</a>
+    <a href="/photos" class="{{ 'on' if nav=='photos' }}">Photos</a>
     <a href="/studio" class="{{ 'on' if nav=='studio' }}">Studio</a>
     <a href="/insights" class="{{ 'on' if nav=='insights' }}">Insights</a>
     <a href="/settings" class="{{ 'on' if nav=='settings' }}">Settings</a>
+    <a href="http://localhost:3000/" id="smLink" title="Orders, printing and shipping">Store Manager ↗</a>
   </nav>
 </div></header>
 
@@ -36,6 +38,8 @@
 <main>{% block body %}{% endblock %}</main>
 
 <script>
+// Store Manager is on this same computer (port 3000); use whatever address this page was opened with.
+document.getElementById('smLink').href = location.protocol + '//' + location.hostname + ':3000/';
 document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', e => {
   e.preventDefault();
   const el = document.getElementById(b.dataset.copy);

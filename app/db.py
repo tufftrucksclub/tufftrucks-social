@@ -122,7 +122,27 @@ CREATE TABLE IF NOT EXISTS activity (
     message TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS photos (
+    id TEXT PRIMARY KEY,             -- 'icloud:<asset id>', 'folder:<hash>' or 'edit:<hash>'
+    source TEXT NOT NULL,            -- icloud | folder | edit
+    filename TEXT,
+    album TEXT,
+    taken_at TEXT,
+    width INTEGER,
+    height INTEGER,
+    local_path TEXT,                 -- working JPEG, relative to the data dir (preview size for iCloud)
+    original_path TEXT,              -- full-resolution file once fetched (absolute for folder photos)
+    parent_id TEXT,                  -- for edits: the photo it was made from
+    score INTEGER,                   -- Claude's 1-10 rating for social use
+    notes TEXT,                      -- JSON: description, subject, background, placement, scene idea, ...
+    rated_at TEXT,
+    used_at TEXT,
+    hidden INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS ix_posts_sched ON posts(scheduled_at);
+CREATE INDEX IF NOT EXISTS ix_photos_taken ON photos(taken_at);
 CREATE INDEX IF NOT EXISTS ix_targets_post ON post_targets(post_id);
 CREATE INDEX IF NOT EXISTS ix_metrics_target ON metrics(target_id);
 """
@@ -159,7 +179,24 @@ def conn() -> sqlite3.Connection:
     if _conn is None:
         _conn = _connect()
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
     return _conn
+
+
+# Columns added after the first release; CREATE TABLE IF NOT EXISTS won't add them to an existing db.
+_ADDED_COLUMNS = {
+    "posts": {"photo_id": "TEXT", "placement": "TEXT"},
+    "photos": {"tags": "TEXT"},     # JSON list of lowercase tags; Claude suggests them, you edit them
+}
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    for table, cols in _ADDED_COLUMNS.items():
+        have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+        for name, typ in cols.items():
+            if name not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+    c.commit()
 
 
 @contextmanager

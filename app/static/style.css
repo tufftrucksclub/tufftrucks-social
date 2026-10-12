@@ -174,3 +174,30 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .grid > * { min-width: 0; }
 input, select, textarea { min-width: 0; max-width: 100%; }
 .times { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
+
+/* photos page */
+.newbg summary { cursor: pointer; font-size: 13px; color: var(--muted); font-weight: 600; }
+.newbg[open] summary { margin-bottom: 8px; }
+.bulkbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; position: sticky; top: 58px; z-index: 5;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.bulkbar .check { margin: 0; }
+.phwrap { position: relative; }
+.phwrap .ph { display: block; }
+.pick { position: absolute; top: 8px; left: 8px; margin: 0; background: rgba(0,0,0,.55); border-radius: 7px; padding: 5px; line-height: 0; cursor: pointer; }
+.pick input { width: 20px; height: 20px; accent-color: var(--blue); cursor: pointer; margin: 0; }
+.rv.picked { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+/* photo tags */
+.tags { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.tag { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; padding: 1px 4px 1px 8px; border-radius: 99px;
+  background: #0d0f13; border: 1px solid var(--line); color: var(--text); }
+.tag a { color: inherit; } .tag a:hover { text-decoration: none; color: #fff; }
+a.tag { padding-right: 8px; } a.tag:hover { border-color: var(--blue); text-decoration: none; }
+.tag small { color: var(--muted); margin-left: 3px; }
+.tag .x { background: none; border: 0; color: var(--muted); padding: 0 4px; font-size: 14px; line-height: 1; cursor: pointer; text-decoration: none; }
+.tag .x:hover { color: #ff9c9c; }
+.tag.on { background: rgba(47,140,255,.15); border-color: rgba(47,140,255,.5); color: #cfe2ff; padding: 3px 4px 3px 10px; font-size: 13px; }
+input.tagadd { width: 70px; padding: 2px 8px; font-size: 12px; border-radius: 99px; }
+input.tagadd:focus { width: 130px; }
+.tagfilter { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.tagfilter #tagq { width: 220px; }
+.tagfilter .popular { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 5px; }

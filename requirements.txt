@@ -8,3 +8,5 @@ pillow-heif>=0.18
 numpy>=1.26
 anthropic>=0.40
 apscheduler>=3.10,<4
+pyicloud>=2.7      # iCloud Photos
+rich>=13           # pyicloud imports it but doesn't declare it

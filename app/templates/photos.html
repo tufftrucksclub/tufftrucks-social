@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}Photos{% endblock %}
+{% block body %}
+{% set tagq = ('&tags=' ~ (want|join(',')|urlencode)) if want else '' %}
+<div class="spread" style="margin-bottom:14px">
+  <h1 style="margin:0">Your photos</h1>
+  <div class="row">
+    {% for k, v in views %}<a class="btn sm {{ 'primary' if show==k }}" href="/photos?show={{ k }}{{ tagq }}">{{ v }}</a>{% endfor %}
+    <form class="inline" method="post" action="/photos/scan"><button class="sm">↻ Scan for new photos</button></form>
+  </div>
+</div>
+<p class="muted" style="margin-top:0">Photos from iCloud and your folders. Claude scores each one for how well it would work as a post
+  ({{ counts.total }} so far{% if counts.unrated %}, {{ counts.unrated }} waiting to be rated{% endif %}). Posts made from these always wait for your OK.</p>
+
+<div class="grid g-side">
+  <div>
+  <datalist id="alltags">{% for tg, cnt in all_tags %}<option value="{{ tg }}">{{ tg }} ({{ cnt }})</option>{% endfor %}</datalist>
+  <form method="get" action="/photos" class="tagfilter" id="tagfilter">
+    <input type="hidden" name="show" value="{{ show }}">
+    <input type="hidden" name="tags" id="tagsval" value="{{ want|join(',') }}">
+    {% for tg in want %}{% set rest = want|reject('equalto', tg)|join(',') %}<span class="tag on">{{ tg }}<a class="x" title="Remove from filter"
+      href="/photos?show={{ show }}{{ ('&tags=' ~ rest|urlencode) if rest }}">×</a></span>{% endfor %}
+    <input type="text" id="tagq" list="alltags" placeholder="{{ 'Add another tag…' if want else 'Filter by tag…' }}" autocomplete="off">
+    {% if want %}<a class="btn sm" href="/photos?show={{ show }}">Clear</a>{% endif %}
+    {% if all_tags and not want %}<div class="popular">{% for tg, cnt in all_tags[:14] %}<a class="tag" href="/photos?show={{ show }}&tags={{ tg|urlencode }}">{{ tg }} <small>{{ cnt }}</small></a>{% endfor %}</div>{% endif %}
+  </form>
+  {% if photos %}
+  <form id="bulk" method="post" action="/photos/bulk" class="bulkbar">
+    <input type="hidden" name="show" value="{{ show }}">
+    <input type="hidden" name="tags" value="{{ want|join(',') }}">
+    <label class="check"><input type="checkbox" id="selall"> Select all</label>
+    <span id="selcount" class="muted">0 selected</span>
+    {% if show == 'hidden' %}<button class="sm" name="action" value="unhide" disabled>Unhide selected</button>
+    {% else %}<button class="sm danger" name="action" value="hide" disabled>Hide selected</button>{% endif %}
+    <span class="row" style="gap:6px"><input type="text" name="tag" list="alltags" placeholder="tag" style="width:130px" autocomplete="off">
+      <button class="sm" name="action" value="tag" disabled>Tag selected</button></span>
+  </form>
+  <div class="cards">
+  {% for p in photos %}
+    {% set n = p.n %}
+    <div class="rv">
+      <div class="phwrap">
+        <a class="ph" href="{{ media_url(p.local_path) }}" target="_blank" style="background-image:url('{{ media_url(p.local_path) }}')"></a>
+        <label class="pick" title="Select"><input type="checkbox" name="ids" value="{{ p.id }}" form="bulk"></label>
+      </div>
+      <div class="body">
+        <div class="spread">
+          {% if p.score %}<span class="pill {{ 'ok' if p.score >= 7 else ('warn' if p.score >= 4 else 'bad') }}">{{ p.score }}/10</span>{% else %}<span class="pill">Not rated</span>{% endif %}
+          {% if p.source == 'edit' %}<span class="pill pink">New background</span>{% endif %}
+        </div>
+        {% if n.description %}<div class="quote">{{ n.description }}</div>{% endif %}
+        <div class="tags" data-id="{{ p.id }}">
+          {% for tg in p.tag_list %}<span class="tag"><a href="/photos?show={{ show }}&tags={{ (want + [tg])|unique|join(',')|urlencode }}">{{ tg }}</a><button type="button" class="x" title="Remove tag">×</button></span>{% endfor %}
+          <input class="tagadd" type="text" list="alltags" placeholder="+ tag" autocomplete="off">
+        </div>
+        <small>{{ fmt_local(p.taken_at, '%b %-d, %Y') if p.taken_at else '' }} · {{ {'icloud':'iCloud','folder':'Folder','edit':'Edited'}[p.source] }}{% if p.album %} · {{ p.album }}{% endif %}</small>
+        {% if n.privacy_issue %}<small class="why">⚑ May show a plate, face or personal info — check before posting.</small>{% endif %}
+        {% if n.background == 'mundane' and p.source != 'edit' %}<small class="why" style="color:#9fc8ff">Dull background — {{ 'the post will cut it out onto a backdrop' if n.cutout_ok else 'try a new one below' }}.</small>{% endif %}
+        {% if p.used_at %}<span class="pill">Used {{ fmt_local(p.used_at, '%b %-d') }}</span>{% endif %}
+
+        <div class="actions row" style="margin-top:auto">
+          <form class="inline" method="post" action="/photos/{{ p.id }}/post"><input type="hidden" name="kind" value="showcase"><button class="sm primary">Make a post</button></form>
+          <a class="btn sm" href="/studio?photo_id={{ p.id|urlencode }}">Studio</a>
+          <form class="inline" method="post" action="/photos/{{ p.id }}/hide"><input type="hidden" name="hide" value="{{ '0' if p.hidden else '1' }}">
+            <button class="sm danger">{{ 'Unhide' if p.hidden else 'Hide' }}</button></form>
+        </div>
+        {% if bg_options and p.source != 'edit' %}
+        <details class="newbg">
+          <summary>New background…</summary>
+          <form method="post" action="/photos/{{ p.id }}/background" class="stack">
+            <select name="choice" onchange="this.form.custom.style.display = this.value === 'scene:custom' ? '' : 'none'">
+              {% if ai_bg and n.scene_idea %}<option value="scene:{{ n.scene_idea }}">AI scene: {{ n.scene_idea }} (Claude's idea)</option>{% endif %}
+              {% for k, v in bg_options.items() %}<option value="{{ k }}" {{ 'selected' if not (ai_bg and n.scene_idea) and k == n.suggested_backdrop }}>{{ v }}</option>{% endfor %}
+              {% if ai_bg %}<option value="scene:custom">AI scene: describe your own…</option>{% endif %}
+            </select>
+            <input type="text" name="custom" placeholder="e.g. a muddy creek crossing at sunset" style="display:none">
+            <button class="sm">Make it</button>
+          </form>
+        </details>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    {% if show == 'best' and counts.total %}No 7+ photos yet — check <a href="/photos?show=all">All</a>.
+    {% elif counts.total %}Nothing here.
+    {% else %}No photos yet. Connect iCloud (right) or add a folder, then scan.{% endif %}
+  </div>
+  {% endif %}
+  </div>
+
+  <div class="stack">
+    <div class="panel">
+      <h2>iCloud Photos</h2>
+      {% if not ic.installed %}
+        <p class="muted">Needs the <code>pyicloud</code> package: <code>.venv\Scripts\pip install -r requirements.txt</code>, then restart.</p>
+      {% elif ic.connected %}
+        <p><span class="pill ok">Connected</span> {{ ic.apple_id }}</p>
+        <form method="post" action="/photos/icloud/logout" data-confirm="Disconnect iCloud? Photos already pulled in stay here."><button class="sm danger">Disconnect</button></form>
+      {% elif ic.waiting_for_code %}
+        <form method="post" action="/photos/icloud/code" class="stack">
+          <div class="field"><label>6-digit code for {{ ic.apple_id }}</label>
+            <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="9" required autofocus>
+            <div class="hint">Apple sent it as {{ ic.code_sent_to or 'a pop-up on your Apple devices' }}. Use the newest code if you got more than one.</div></div>
+          <button class="primary">Verify</button>
+        </form>
+        <div class="row" style="margin-top:10px">
+          <form class="inline" method="post" action="/photos/icloud/resend"><button class="sm">Send a new code</button></form>
+          <form class="inline" method="post" action="/photos/icloud/cancel"><button class="sm danger">Start over</button></form>
+        </div>
+      {% else %}
+        {% if ic.apple_id and ic.error %}<p class="why">{{ ic.error }}</p>{% endif %}
+        <form method="post" action="/photos/icloud/login" class="stack">
+          <div class="field"><label>Apple ID</label><input type="text" name="apple_id" value="{{ ic.apple_id }}" autocomplete="username" required></div>
+          <div class="field"><label>Apple ID password</label><input type="password" name="password" autocomplete="current-password" required>
+            <div class="hint">Used once to log in and not saved. Apple then sends a code to your devices. The login lasts about two months.</div></div>
+          <button class="primary">Connect iCloud</button>
+        </form>
+        <div class="hint" style="margin-top:10px">Using Advanced Data Protection? Turn on <b>Access iCloud Data on the Web</b> first
+          (iPhone → Settings → your name → iCloud).</div>
+      {% endif %}
+    </div>
+
+    <form class="panel" method="post" action="/photos/settings">
+      <h2>What to scan</h2>
+      <div class="field"><label>iCloud album</label><input type="text" name="album" value="{{ s.photos_album }}" placeholder="Whole library">
+        <div class="hint">Tip: make a “Tuff Trucks” album on your phone and drop good shots in it — then only those get scanned. Shared albums work too.</div></div>
+      <div class="grid g2" style="margin-top:12px">
+        <div class="field"><label>Look back (days)</label><input type="number" name="days" min="1" value="{{ s.photos_days }}">
+          <div class="hint">Whole library only.</div></div>
+        <div class="field"><label>New photos per scan</label><input type="number" name="max_per_scan" min="1" max="1000" value="{{ s.photos_max_per_scan }}"></div>
+      </div>
+      <div class="field"><label>Rated by Claude per scan</label><input type="number" name="rate_per_scan" min="0" max="300" value="{{ s.photos_rate_per_scan }}">
+        <div class="hint">About a penny or two per photo. Scans also run on their own every 6 hours.</div></div>
+      <div class="field"><label>Folders on this computer (one per line)</label>
+        <textarea name="folders" style="min-height:60px" placeholder="C:\Users\you\Pictures\Trucks">{{ s.photos_folders|join('\n') }}</textarea>
+        <div class="hint">{% if auto_folder %}Also scanning iCloud for Windows' folder: <code>{{ auto_folder }}</code>{% else %}iCloud for Windows' photo folder is picked up on its own if you install it.{% endif %} Studio uploads are included too.</div></div>
+      <button class="primary" style="margin-top:12px">Save</button>
+    </form>
+
+    <div class="panel">
+      <h2>New backgrounds</h2>
+      {% if not can_cut %}
+        <p class="muted">Background removal isn't installed: <code>.venv\Scripts\pip install -r requirements-cutout.txt</code></p>
+      {% else %}
+        <p class="muted" style="margin-top:0">Swap a parking lot or garage for something better. <b>Backdrops</b> are free and instant — the truck is
+          cut out and set on any Studio backdrop (upload your own scenery there too).
+          {% if ai_bg %}<b>AI scenes</b> paint a realistic scene around it, matched to the light; your truck's pixels are kept exactly as shot.
+          About 20¢ each.{% else %}Add <code>OPENAI_API_KEY</code> to <code>.env</code> for photorealistic AI scenes.{% endif %}</p>
+      {% endif %}
+      {% if not brain_ok %}<p class="why">Claude isn't connected, so photos won't be rated.</p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const bulk = document.getElementById('bulk');
+  if (!bulk) return;
+  const boxes = [...document.querySelectorAll('input[name=ids]')], all = document.getElementById('selall');
+  const count = document.getElementById('selcount'), btns = [...bulk.querySelectorAll('button')];
+  let last = null;
+  const upd = () => {
+    const n = boxes.filter(b => b.checked).length;
+    count.textContent = `${n} selected`;
+    btns.forEach(b => b.disabled = !n);
+    all.checked = n > 0 && n === boxes.length;
+    all.indeterminate = n > 0 && n < boxes.length;
+    boxes.forEach(b => b.closest('.rv').classList.toggle('picked', b.checked));
+  };
+  boxes.forEach(b => b.addEventListener('click', e => {
+    // shift-click selects everything between this box and the last one clicked
+    if (e.shiftKey && last) {
+      const [a, z] = [boxes.indexOf(last), boxes.indexOf(b)].sort((x, y) => x - y);
+      boxes.slice(a, z + 1).forEach(x => x.checked = b.checked);
+    }
+    last = b; upd();
+  }));
+  all.addEventListener('change', () => { boxes.forEach(b => b.checked = all.checked); upd(); });
+  upd();
+})();
+
+// ---- tag filter: pick or type a tag, press Enter
+(() => {
+  const q = document.getElementById('tagq'), val = document.getElementById('tagsval'), f = document.getElementById('tagfilter');
+  const known = new Set([...document.querySelectorAll('#alltags option')].map(o => o.value));
+  const go = () => {
+    const t = q.value.trim().toLowerCase();
+    if (!t) return;
+    val.value = [...val.value.split(',').filter(Boolean), t].join(',');
+    f.submit();
+  };
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+  q.addEventListener('change', () => { if (known.has(q.value.trim().toLowerCase())) go(); });  // picked from the list
+})();
+
+// ---- editing tags on a card (saves right away)
+(() => {
+  const show = {{ show|tojson }}, want = {{ want|tojson }};
+  const linkFor = t => `/photos?show=${encodeURIComponent(show)}&tags=${encodeURIComponent([...new Set([...want, t])].join(','))}`;
+  const current = box => [...box.querySelectorAll('.tag a')].map(a => a.textContent);
+  const render = (box, tags) => {
+    box.querySelectorAll('.tag').forEach(el => el.remove());
+    const input = box.querySelector('.tagadd');
+    tags.forEach(t => {
+      const s = document.createElement('span'); s.className = 'tag';
+      const a = document.createElement('a'); a.href = linkFor(t); a.textContent = t;
+      const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.title = 'Remove tag'; x.textContent = '×';
+      s.append(a, x); box.insertBefore(s, input);
+    });
+  };
+  const save = async (box, tags) => {
+    const r = await fetch(`/photos/${box.dataset.id}/tags`, {method: 'POST',
+      body: new URLSearchParams({tags: JSON.stringify(tags)})});
+    if (!r.ok) { alert("Couldn't save the tags."); return; }
+    render(box, (await r.json()).tags);
+  };
+  document.querySelectorAll('.tags').forEach(box => {
+    box.addEventListener('click', e => {
+      if (!e.target.classList.contains('x')) return;
+      const t = e.target.previousElementSibling.textContent;
+      save(box, current(box).filter(x => x !== t));
+    });
+    const input = box.querySelector('.tagadd');
+    input.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const add = input.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      input.value = '';
+      if (add.length) save(box, [...current(box), ...add]);
+    });
+  });
+})();
+</script>
+{% endblock %}

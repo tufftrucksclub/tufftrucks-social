@@ -68,25 +68,42 @@ def load_image(src: str) -> Image.Image:
 _rembg_session = None
 
 
-def cutout(img: Image.Image, cache_key: str) -> Image.Image | None:
-    """Remove the background. Returns None if rembg isn't installed or the result
-    doesn't look like a clean product cutout."""
+def can_cut_out() -> bool:
+    try:
+        import rembg  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def remove_background(img: Image.Image, cache_key: str, max_side: int = 1600) -> Image.Image | None:
+    """The photo with its background made transparent (same framing, not cropped), or None
+    if rembg isn't installed."""
     global _rembg_session
-    cache = config.CACHE_DIR / f"cut_{hashlib.sha1(cache_key.encode()).hexdigest()[:20]}.png"
+    name = cache_key if max_side == 1600 else f"{cache_key}|{max_side}"  # 1600 keeps the existing cache names
+    cache = config.CACHE_DIR / f"cut_{hashlib.sha1(name.encode()).hexdigest()[:20]}.png"
     if cache.exists():
-        out = Image.open(cache).convert("RGBA")
-    else:
-        try:
-            from rembg import new_session, remove
-        except ImportError:
-            return None
-        if _rembg_session is None:
-            _rembg_session = new_session(config.env("REMBG_MODEL", "isnet-general-use"))
-        src = img.convert("RGB")
-        if max(src.size) > 1600:
-            src.thumbnail((1600, 1600), Image.LANCZOS)
-        out = remove(src, session=_rembg_session).convert("RGBA")
-        out.save(cache)
+        return Image.open(cache).convert("RGBA")
+    try:
+        from rembg import new_session, remove
+    except ImportError:
+        return None
+    if _rembg_session is None:
+        _rembg_session = new_session(config.env("REMBG_MODEL", "isnet-general-use"))
+    src = img.convert("RGB")
+    if max(src.size) > max_side:
+        src.thumbnail((max_side, max_side), Image.LANCZOS)
+    out = remove(src, session=_rembg_session).convert("RGBA")
+    out.save(cache)
+    return out
+
+
+def cutout(img: Image.Image, cache_key: str) -> Image.Image | None:
+    """Remove the background and crop to the subject. Returns None if rembg isn't installed or the
+    result doesn't look like a clean cutout."""
+    out = remove_background(img, cache_key)
+    if out is None:
+        return None
     alpha = np.asarray(out.getchannel("A"))
     coverage = (alpha > 128).mean()
     if coverage < 0.03 or coverage > 0.92:
@@ -123,11 +140,12 @@ def _fit_text(draw, text, font_path, max_w, max_size, min_size, weight=None, max
     return f, _wrap(draw, text, f, max_w)[:max_lines]
 
 
-def _wrap(draw, text, f, max_w):
+def _wrap(draw, text, f, max_w, measure=None):
+    measure = measure or (lambda t: draw.textlength(t, font=f))
     lines, cur = [], ""
     for w in text.split():
         trial = (cur + " " + w).strip()
-        if draw.textlength(trial, font=f) <= max_w or not cur:
+        if measure(trial) <= max_w or not cur:
             cur = trial
         else:
             lines.append(cur)
@@ -135,6 +153,119 @@ def _wrap(draw, text, f, max_w):
     if cur:
         lines.append(cur)
     return lines
+
+
+# --------------------------------------------------------------- emoji
+# The brand fonts have no emoji, so customer emojis in review quotes would draw as
+# empty boxes. Draw them with the system's color emoji font instead (Segoe UI Emoji on
+# Windows, Noto Color Emoji on Linux/Pi); if neither is installed, leave them out.
+_EMOJI_FONTS = [Path(r"C:\Windows\Fonts\seguiemj.ttf"),
+                Path("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"),
+                Path("/usr/share/fonts/noto/NotoColorEmoji.ttf")]
+_emoji_cache: dict = {}
+_EMOJI_SKIP = {0xFE0E, 0xFE0F, 0x200D, 0x20E3}  # selectors / joiners: no glyph of their own
+
+
+def _is_emoji_cp(cp: int) -> bool:
+    return (0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF
+            or 0x2B00 <= cp <= 0x2BFF or 0xE0020 <= cp <= 0xE007F or cp in _EMOJI_SKIP)
+
+
+def _segments(text: str) -> list[tuple[bool, str]]:
+    """Split text into runs of (is_emoji, chars)."""
+    out: list[list] = []
+    for ch in text:
+        e = _is_emoji_cp(ord(ch))
+        if out and out[-1][0] == e:
+            out[-1][1] += ch
+        else:
+            out.append([e, ch])
+    return [(e, s) for e, s in out]
+
+
+def _emoji_font(px: int):
+    if "path" not in _emoji_cache:
+        _emoji_cache["path"] = next((p for p in _EMOJI_FONTS if p.exists()), None)
+    path = _emoji_cache["path"]
+    if path is None:
+        return None
+    if px not in _emoji_cache:
+        ef = None
+        for size in (px, 109):  # Noto Color Emoji is a bitmap font that only loads at 109
+            try:
+                ef = ImageFont.truetype(str(path), size)
+                break
+            except OSError:
+                continue
+        _emoji_cache[px] = ef
+    return _emoji_cache[px]
+
+
+def has_emoji_font() -> bool:
+    return _emoji_font(32) is not None
+
+
+def strip_emoji(text: str) -> str:
+    out = "".join(ch for ch in text if not _is_emoji_cp(ord(ch))
+                  and not 0x1F3FB <= ord(ch) <= 0x1F3FF)
+    return " ".join(out.split())
+
+
+def _emoji_img(run: str, px: int):
+    """Render a run of emoji as an RGBA image about px tall, or None."""
+    key = ("img", run, px)
+    if key in _emoji_cache:
+        return _emoji_cache[key]
+    ef = _emoji_font(px)
+    glyphs = "".join(c for c in run if ord(c) not in _EMOJI_SKIP and not 0x1F3FB <= ord(c) <= 0x1F3FF)
+    img = None
+    if ef is not None and glyphs:
+        try:
+            w = int(math.ceil(ef.getlength(glyphs))) + 8
+            h = int(ef.size * 1.4) + 8
+            im = Image.new("RGBA", (max(w, 1), h), (0, 0, 0, 0))
+            ImageDraw.Draw(im).text((4, 4), glyphs, font=ef, embedded_color=True)
+            bb = im.getbbox()
+            if bb:
+                im = im.crop((bb[0], bb[1], bb[2], bb[3]))
+                scale = px / max(im.height, 1)
+                img = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))),
+                                Image.LANCZOS)
+        except Exception:
+            img = None
+    _emoji_cache[key] = img
+    return img
+
+
+def _rich_len(draw, text: str, f) -> float:
+    total = 0.0
+    for e, s in _segments(text):
+        if not e:
+            total += draw.textlength(s, font=f)
+        else:
+            im = _emoji_img(s, int(f.size * 0.86))
+            if im is not None:
+                total += im.width + f.size * 0.12
+    return total
+
+
+def _rich_text(canvas: Image.Image, xy, text: str, f, fill) -> None:
+    """Draw text left-aligned at xy (top-left, like draw.text), with emoji in color."""
+    d = ImageDraw.Draw(canvas)
+    x, y = xy
+    ascent, descent = f.getmetrics()
+    for e, s in _segments(text):
+        if not e:
+            d.text((x, y), s, font=f, fill=fill)
+            x += d.textlength(s, font=f)
+            continue
+        im = _emoji_img(s, int(f.size * 0.86))
+        if im is None:
+            continue
+        x += f.size * 0.06
+        top = int(y + ascent + descent * 0.2 - im.height)
+        canvas.alpha_composite(im, dest=(int(x), max(0, top)))
+        x += im.width + f.size * 0.06
 
 
 def _shadowed_text(canvas: Image.Image, xy, text, f, fill, shadow=(0, 0, 0, 170), offset=4, anchor="la"):
@@ -163,6 +294,22 @@ def _star(cx, cy, r):
     return pts
 
 
+def _match_light(cut: Image.Image, region: Image.Image, strength: float = 0.35) -> Image.Image:
+    """Nudge the cutout's brightness toward the backdrop behind it, so a subject shot in a sunny
+    parking lot doesn't glow on a night scene. Brightness only — product colors stay true."""
+    a = np.asarray(cut, dtype=float)
+    alpha = a[:, :, 3] > 128
+    if alpha.sum() < 50:
+        return cut
+    luma = a[:, :, :3] @ np.array([0.299, 0.587, 0.114])
+    subj = float(luma[alpha].mean())
+    bg = float(np.asarray(region.convert("L"), dtype=float).mean())
+    target = subj + (bg - subj) * strength
+    gain = float(np.clip(target / max(subj, 1.0), 0.8, 1.15))
+    a[:, :, :3] = np.clip(a[:, :, :3] * gain, 0, 255)
+    return Image.fromarray(a.astype("uint8"), "RGBA")
+
+
 def _place_cutout(canvas: Image.Image, cut: Image.Image, box, floor: bool, glow_color):
     x0, y0, x1, y1 = box
     bw, bh = x1 - x0, y1 - y0
@@ -170,6 +317,9 @@ def _place_cutout(canvas: Image.Image, cut: Image.Image, box, floor: bool, glow_
     cut = cut.resize((max(1, int(cut.width * scale)), max(1, int(cut.height * scale))), Image.LANCZOS)
     px = x0 + (bw - cut.width) // 2
     py = y0 + (bh - cut.height) // 2 if not floor else y1 - cut.height
+    # tidy the edge: drop the faint halo of old background rembg leaves around the subject
+    cut.putalpha(cut.getchannel("A").filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(0.7)))
+    cut = _match_light(cut, canvas.crop((px, py, px + cut.width, py + cut.height)))
     shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
     if floor:  # contact shadow on the floor
@@ -218,6 +368,24 @@ def _place_framed(canvas: Image.Image, photo: Image.Image, box, tilt: float = -2
     canvas.alpha_composite(card, (cx, cy))
 
 
+def _full_bleed(photo: Image.Image, W: int, H: int) -> Image.Image:
+    """The photo fills the whole graphic, with soft shading where the text goes."""
+    img = ImageOps.fit(photo.convert("RGB"), (W, H), Image.LANCZOS, centering=(0.5, 0.5)).convert("RGBA")
+    shade = np.zeros((H, W), dtype=float)
+    if W > H:   # landscape: text column on the right
+        x = np.linspace(0, 1, W)[None, :]
+        shade = np.broadcast_to(np.clip((x - 0.45) / 0.55, 0, 1) ** 1.2 * 190, (H, W)).copy()
+    else:       # headline on top, cards / pill at the bottom
+        y = np.linspace(0, 1, H)[:, None]
+        top = np.clip(1 - y / 0.36, 0, 1) ** 1.5 * 175
+        bottom = np.clip((y - 0.68) / 0.32, 0, 1) ** 1.5 * 150
+        shade = np.broadcast_to(top + bottom, (H, W)).copy()
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    layer.putalpha(Image.fromarray(shade.astype("uint8"), "L"))
+    img.alpha_composite(layer)
+    return img
+
+
 # ------------------------------------------------------------------ main
 def _line_metrics(f):
     ascent, descent = f.getmetrics()
@@ -230,12 +398,14 @@ def _review_block(draw, quote, width, max_h, sizes, inner):
     chrome = inner * 2 + sr * 2 + 24 + 48  # padding + stars + attribution row
     for size in sizes:
         qf = font(BODY_FONT, size, "Medium")
-        lines = _wrap(draw, f"\u201c{quote}\u201d", qf, width - inner * 2)
+        lines = _wrap(draw, f"\u201c{quote}\u201d", qf, width - inner * 2,
+                      measure=lambda t, qf=qf: _rich_len(draw, t, qf))
         h = chrome + len(lines) * int(size * 1.28)
         if h <= max_h:
             return qf, lines, h
     qf = font(BODY_FONT, sizes[-1], "Medium")
-    lines = _wrap(draw, f"\u201c{quote}\u201d", qf, width - inner * 2)
+    lines = _wrap(draw, f"\u201c{quote}\u201d", qf, width - inner * 2,
+                  measure=lambda t: _rich_len(draw, t, qf))
     fit = max(1, int((max_h - chrome) // (sizes[-1] * 1.28)))
     if len(lines) > fit:
         lines = lines[:fit]
@@ -257,15 +427,16 @@ def _draw_review_card(canvas, box, qf, lines, rating, attribution, light_bg, acc
     txt = (255, 255, 255) if not light_bg else (20, 22, 28)
     y = cy0 + inner + sr * 2 + 24
     for ln in lines:
-        d.text((cx0 + inner, y), ln, font=qf, fill=txt)
+        _rich_text(canvas, (cx0 + inner, y), ln, qf, txt)
         y += int(qf.size * 1.28)
+    d = ImageDraw.Draw(canvas)
     af = font(BODY_FONT, 30, "SemiBold")
     attr = _wrap(d, attribution, af, (cx1 - cx0) - inner * 2)
     d.text((cx0 + inner, cy1 - inner - 30), attr[0] if attr else attribution, font=af, fill=accent)
 
 
 def render(spec: dict, fmt: str) -> Image.Image:
-    """spec keys: layout (product|review_photo|review_card), photo, placement (auto|cutout|framed),
+    """spec keys: layout (product|review_photo|review_card), photo, placement (auto|cutout|framed|full),
     backdrop, headline, subline, review_text, rating, accent, accent2, watermark."""
     W, H = FORMATS[fmt]
     s = db.all_settings()
@@ -273,7 +444,14 @@ def render(spec: dict, fmt: str) -> Image.Image:
     accent2 = spec.get("accent2") or s["accent_color_2"]
     style = spec.get("backdrop") or "garage"
     seed = int(hashlib.sha1((spec.get("headline") or "x").encode()).hexdigest()[:6], 16)
-    bg = backdrops.render(style, W, H, accent, accent2, seed).convert("RGBA")
+    placement = spec.get("placement") or "auto"
+    full = None
+    if spec.get("photo") and placement == "full":
+        try:
+            full = _full_bleed(load_image(spec["photo"]), W, H)
+        except Exception as e:
+            db.log(f"Studio: couldn't use photo {spec.get('photo')}: {e}", "warn")
+    bg = full if full is not None else backdrops.render(style, W, H, accent, accent2, seed).convert("RGBA")
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))   # text + cards layer, composited last
     draw = ImageDraw.Draw(canvas)
 
@@ -283,6 +461,8 @@ def render(spec: dict, fmt: str) -> Image.Image:
     gap = int(min(W, H) * 0.03)
     inner = 36
     quote = (spec.get("review_text") or "").strip().strip('"\u201c\u201d')
+    if not has_emoji_font():
+        quote = strip_emoji(quote)
     has_review = layout in ("review_photo", "review_card") and bool(quote)
     has_photo = bool(spec.get("photo"))
     rating = int(spec.get("rating") or 5)
@@ -374,10 +554,9 @@ def render(spec: dict, fmt: str) -> Image.Image:
             photo_box = (pad, head_bottom, W - pad, bottom)
 
     # ------------------------------------------------ photo (drawn under the text overlays)
-    if has_photo and photo_box and photo_box[3] - photo_box[1] > 80:
+    if has_photo and full is None and photo_box and photo_box[3] - photo_box[1] > 80:
         try:
             photo = load_image(spec["photo"])
-            placement = spec.get("placement") or "auto"
             cut = None
             if placement == "cutout" or (placement == "auto" and layout == "product"):
                 cut = cutout(photo, spec["photo"])

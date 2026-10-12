@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from . import brain, config, db
 from .publishers import REGISTRY, PublishError
-from .sources import etsy, shopify
+from .sources import etsy, photos, shopify
 from .studio import backdrops, compose
 
 DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -40,7 +40,82 @@ def sync_sources() -> dict:
     except Exception as e:
         out["errors"].append(f"photo rating: {e}")
         db.log(f"Rating review photos failed: {e}", "error")
+    lib = sync_photos()
+    out["library_new"], out["library_rated"] = lib["library_new"], lib["library_rated"]
+    out["errors"] += lib["errors"]
     return out
+
+
+def sync_photos() -> dict:
+    """Pull new photos from iCloud / folders, then have Claude rate them."""
+    res = photos.scan()
+    out = {"library_new": res["icloud"] + res["folders"], "library_rated": 0, "errors": res["errors"]}
+    try:
+        out["library_rated"] = rate_library_photos()
+    except Exception as e:
+        out["errors"].append(f"library rating: {e}")
+        db.log(f"Rating library photos failed: {e}", "error")
+    return out
+
+
+def rate_library_photos(limit: int | None = None, batch: int = 6) -> int:
+    if not brain.available():
+        return 0
+    limit = limit or int(db.get_setting("photos_rate_per_scan") or 36)
+    styles = [k for k in backdrops.list_styles() if not k.startswith("ai:")]
+    n, tried = 0, set()
+    while len(tried) < limit:
+        # Pick each batch fresh, so a photo you hide while this runs is never sent to Claude.
+        rows = [r for r in db.q("SELECT * FROM photos WHERE score IS NULL AND hidden = 0 AND source != 'edit' "
+                                "ORDER BY taken_at DESC LIMIT ?", (limit,)) if r["id"] not in tried]
+        rows = rows[:min(batch, limit - len(tried))]
+        if not rows:
+            break
+        tried.update(r["id"] for r in rows)
+        chunk, imgs = [], []
+        for r in rows:
+            try:
+                imgs.append(compose.load_image(str(config.DATA_DIR / r["local_path"])))
+                chunk.append(r)
+            except Exception as e:
+                db.run("UPDATE photos SET score = 1, notes = ?, rated_at = ? WHERE id = ?",
+                       (json.dumps({"description": f"Couldn't open: {e}"}), db.iso(), r["id"]))
+        if not chunk:
+            continue
+        for r, res in zip(chunk, brain.rate_library_photos(imgs, styles)):
+            if not res:
+                continue
+            res = dict(res)
+            res.pop("index", None)
+            # what the Studio should do with it: a dull background behind a clean subject gets replaced
+            if res.get("background") == "mundane" and res.get("cutout_ok"):
+                res["placement"] = "cutout"
+            elif res.get("background") == "great":
+                res["placement"] = "full"
+            else:
+                res["placement"] = "framed"
+            if res.get("suggested_backdrop") not in styles:
+                res["suggested_backdrop"] = "garage"
+            # ...and one hidden during the Claude call itself isn't saved as rated
+            # tags you added before it was rated stay, and Claude's suggestions join them
+            mine = photos.tags_of(db.q1("SELECT tags FROM photos WHERE id = ?", (r["id"],)) or {})
+            db.run("UPDATE photos SET score = ?, notes = ?, rated_at = ?, tags = ? WHERE id = ? AND hidden = 0",
+                   (int(res.get("score") or 1), json.dumps(res), db.iso(),
+                    json.dumps(photos.clean_tags(mine + photos.default_tags(res, r["source"]))), r["id"]))
+            n += 1
+    if n:
+        db.log(f"Claude rated {n} library photo{'s' if n != 1 else ''}")
+    return n
+
+
+def library_picks(limit: int = 25, min_score: int = 6) -> list[dict]:
+    """Best unused library photos, for the planner."""
+    rows = db.q("SELECT * FROM photos WHERE hidden = 0 AND used_at IS NULL AND score >= ? "
+                "ORDER BY score DESC, taken_at DESC LIMIT ?", (min_score, limit))
+    for r in rows:
+        r["n"] = db.jl(r.get("notes"), {}) or {}
+        r["n"]["tags"] = photos.tags_of(r)
+    return rows
 
 
 def rate_new_review_photos(limit: int = 15) -> int:
@@ -117,12 +192,13 @@ def plan_week(week_start: date | None = None, replace: bool = False) -> dict:
         return {"week": week_key, "created": 0, "note": "No products yet — run a sync first"}
 
     styles = [s for s in backdrops.list_styles()]
+    lib = library_picks() if brain.available() else []
     if brain.available():
         try:
             best = shopify.best_sellers() if shopify.configured() else {}
         except Exception:
             best = {}
-        plan = brain.plan_week(week_start, products[:120], reviews, best, perf_summary(), styles)
+        plan = brain.plan_week(week_start, products[:120], reviews, best, perf_summary(), styles, lib)
     else:
         plan = _fallback_plan(products, reviews, styles)
         db.log("No ANTHROPIC_API_KEY — used the simple built-in planner", "warn")
@@ -134,6 +210,8 @@ def plan_week(week_start: date | None = None, replace: bool = False) -> dict:
     enabled = set(db.get_setting("enabled_platforms") or config.PLATFORMS)
     product_ids = {p["id"] for p in products}
     review_ids = {r["id"] for r in reviews}
+    photo_ids = {p["id"] for p in lib}
+    used_photos: set[str] = set()
     created, used_days = 0, set()
     for item in plan.get("posts", []):
         day = item.get("day")
@@ -142,9 +220,15 @@ def plan_week(week_start: date | None = None, replace: bool = False) -> dict:
         kind = item.get("kind") if item.get("kind") in config.POST_KINDS else "product_spotlight"
         pid = item.get("product_id") if item.get("product_id") in product_ids else None
         rid = item.get("review_id") if item.get("review_id") in review_ids else None
-        if kind in REVIEW_KINDS and not rid:
-            continue
-        if kind not in REVIEW_KINDS and not pid:
+        phid = item.get("photo_id") if item.get("photo_id") in photo_ids - used_photos else None
+        if kind in REVIEW_KINDS:
+            phid = None
+            if not rid:
+                continue
+        elif kind == "showcase":
+            if not phid:
+                continue
+        elif not pid and not phid:
             continue
         sched = _slot(week_start, day)
         if sched <= local_now() + timedelta(hours=1):
@@ -152,8 +236,11 @@ def plan_week(week_start: date | None = None, replace: bool = False) -> dict:
         platforms = [p for p in (item.get("platforms") or config.PLATFORMS) if p in enabled] or list(enabled)
         post_id = create_post(kind=kind, product_id=pid, review_id=rid, angle=item.get("angle", ""),
                               headline=item.get("headline", ""), backdrop=item.get("backdrop", "garage"),
-                              scheduled_at=sched, platforms=platforms, created_by="planner", week=week_key)
+                              scheduled_at=sched, platforms=platforms, created_by="planner", week=week_key,
+                              photo_id=phid)
         used_days.add(day)
+        if phid:
+            used_photos.add(phid)
         try:
             build_post(post_id)
         except Exception as e:
@@ -193,14 +280,20 @@ def _fallback_plan(products, reviews, styles) -> dict:
 # ================================================================ post build
 def create_post(*, kind, product_id=None, review_id=None, angle="", headline="", backdrop="garage",
                 scheduled_at: datetime | None = None, platforms=None, created_by="manual", week=None,
-                source_image=None) -> int:
+                source_image=None, photo_id=None, placement=None) -> int:
     now = db.iso()
+    if photo_id:
+        ph = photos.get(photo_id)
+        if ph:
+            placement = placement or ph["n"].get("placement")
+            if backdrop == "garage" and ph["n"].get("suggested_backdrop"):
+                backdrop = ph["n"]["suggested_backdrop"]
     post_id = db.run(
         """INSERT INTO posts(kind, title, angle, product_id, review_id, source_image, backdrop, overlay_text,
-                             scheduled_at, status, created_by, week, created_at, updated_at)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)""",
+                             scheduled_at, status, created_by, week, created_at, updated_at, photo_id, placement)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)""",
         (kind, "", angle, product_id, review_id, source_image, backdrop, headline,
-         db.iso(scheduled_at) if scheduled_at else None, created_by, week, now, now))
+         db.iso(scheduled_at) if scheduled_at else None, created_by, week, now, now, photo_id, placement))
     for p in platforms or db.get_setting("enabled_platforms"):
         db.run("INSERT OR IGNORE INTO post_targets(post_id, platform, status) VALUES(?, ?, 'pending')", (post_id, p))
     return post_id
@@ -215,6 +308,7 @@ def get_post(post_id: int) -> dict | None:
                            "WHEN 'pinterest' THEN 4 ELSE 5 END", (post_id,))
     post["product"] = db.q1("SELECT * FROM products WHERE id = ?", (post["product_id"],)) if post["product_id"] else None
     post["review"] = db.q1("SELECT * FROM reviews WHERE id = ?", (post["review_id"],)) if post["review_id"] else None
+    post["photo"] = photos.get(post["photo_id"]) if post.get("photo_id") else None
     return post
 
 
@@ -225,6 +319,11 @@ def _layout(post, photo) -> str:
 
 
 def _pick_photo(post) -> str | None:
+    if post.get("photo"):
+        try:
+            return photos.best_image(post["photo"]["id"])
+        except Exception as e:
+            db.log(f"Post #{post['id']}: library photo unavailable ({e})", "warn")
     if post.get("source_image"):
         return post["source_image"]
     if post["kind"] in REVIEW_KINDS and post.get("review") and post["review"].get("image_url"):
@@ -261,7 +360,8 @@ def build_post(post_id: int, redraft: bool = True) -> dict:
     s = db.all_settings()
     if redraft:
         if brain.available():
-            caps = brain.draft_captions(post, post.get("product"), post.get("review"))
+            caps = brain.draft_captions(post, post.get("product"), post.get("review"),
+                                        (post.get("photo") or {}).get("n"))
         else:
             caps = _template_captions(post)
         if caps.get("headline") and not post.get("overlay_text"):
@@ -290,8 +390,11 @@ def build_post(post_id: int, redraft: bool = True) -> dict:
     if post.get("review") and post["review"].get("photo_notes"):
         if (db.jl(post["review"]["photo_notes"], {}) or {}).get("privacy_issue"):
             photo_flag = "Customer photo may show a plate/face."
+    if post.get("photo") and post["photo"]["n"].get("privacy_issue"):
+        photo_flag = "Your photo may show a plate/face/personal info."
+    # photos from your own library always get a human look before they go public
     auto = (post["kind"] in auto_kinds and post["kind"] not in REVIEW_KINDS and not reason and not photo_flag
-            and sched is not None and sched >= db.utcnow() + hold)
+            and not post.get("photo_id") and sched is not None and sched >= db.utcnow() + hold)
     status = "approved" if auto else "needs_approval"
     db.run("UPDATE posts SET status = ?, approval = ?, needs_human_reason = ?, updated_at = ? WHERE id = ?",
            (status, "auto" if auto else None, reason or photo_flag or None, db.iso(), post_id))
@@ -301,8 +404,8 @@ def build_post(post_id: int, redraft: bool = True) -> dict:
 def render_media(post: dict) -> None:
     photo = _pick_photo(post)
     rv = post.get("review") or {}
-    placement = "auto"
-    if post["kind"] in REVIEW_KINDS:
+    placement = post.get("placement") or "auto"
+    if post["kind"] in REVIEW_KINDS and not post.get("placement"):
         placement = (db.jl(rv.get("photo_notes"), {}) or {}).get("placement") or "framed"
     spec = {"layout": _layout(post, photo), "photo": photo, "placement": placement,
             "backdrop": post.get("backdrop") or "garage", "headline": post.get("overlay_text") or "",
@@ -387,6 +490,8 @@ def publish_post(post_id: int, only_platform: str | None = None) -> dict:
     _rollup_status(post_id)
     if post.get("review_id"):
         db.run("UPDATE reviews SET used_at = ? WHERE id = ?", (db.iso(), post["review_id"]))
+    if post.get("photo_id"):
+        db.run("UPDATE photos SET used_at = ? WHERE id = ?", (db.iso(), post["photo_id"]))
     if post.get("product_id"):
         db.run("UPDATE products SET last_featured_at = ?, times_featured = COALESCE(times_featured,0) + 1 "
                "WHERE id = ?", (db.iso(), post["product_id"]))

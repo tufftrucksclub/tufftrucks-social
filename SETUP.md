@@ -84,6 +84,20 @@ Test on **Settings → Shopify → Test upload**.
 Read-only; no Etsy login needed. Etsy's API doesn't give buyer names, and only includes the buyer's photo when
 their privacy settings allow it.
 
+### 4b. iCloud Photos (optional — your own photos)
+
+Open the **Photos** page → enter your Apple ID and password → type the 6-digit code Apple sends to your iPhone.
+The password is used once and not saved; the login is kept in `data/icloud/` and lasts about two months, after
+which the Photos page asks you to log in again. On a Pi with no browser, run `python -m app.tools icloud-login`.
+
+- **Advanced Data Protection** on? Turn on *Access iCloud Data on the Web* first (iPhone → Settings → your name → iCloud).
+- Best results: make a **“Tuff Trucks” album** on your phone, drop good shots in, and put that album name on the
+  Photos page — then only those get scanned. Otherwise it looks at the last 90 days of the whole library.
+- Have **iCloud for Windows** syncing photos? Its folder is scanned automatically too; add any other folders on the
+  Photos page.
+
+Claude rates each new photo (about 1–2¢ each, six per call) and flags plates, faces and dull backgrounds.
+
 ---
 
 ## 5. Facebook + Instagram
@@ -184,7 +198,16 @@ for faster cut-outs; planning runs in the background either way.
   time, approve. Editing an auto-approved post puts it back in your queue.
 - **Reviews** — every Etsy review with Claude's photo score. *Photo + backdrop post* puts the buyer's picture on a
   new backdrop with their quote; *Quote card* makes a text graphic. A ⚑ means a plate/face might be visible.
-- **Studio** — any product or review photo on any backdrop, every size at once. Upload your own backdrops
+- **Photos** — your iCloud / folder photos, best first, with Claude's score and what's in each one. *Make a post*
+  turns one into a truck showcase (always waits for your OK). *New background…* swaps a parking lot or garage for
+  something better and saves it as a new photo:
+  - **Backdrop** (free, instant): the truck is cut out and set on any Studio backdrop, including scenery photos you
+    upload as backdrops.
+  - **AI scene** (needs `OPENAI_API_KEY`, ~20¢): a realistic scene is painted around the truck, matched to its light
+    and angle. The truck's own pixels are pasted back on top, so your products are never altered.
+  Photos with a dull background and a clean subject are cut out onto a backdrop automatically when they become posts.
+- **Studio** — any product, review or library photo on any backdrop, every size at once. Placement *Cut out*
+  replaces the photo's background with the backdrop; *Full photo* fills the frame. Upload your own backdrops
   (shop, trail, truck meet) and they show up as styles.
 - **Insights** — numbers by platform and post type; **Ask Claude what's working** writes a plain-English review
   that next week's planner reads.

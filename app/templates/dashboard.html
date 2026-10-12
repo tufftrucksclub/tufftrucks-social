@@ -113,7 +113,7 @@
       <h2>Schedule</h2>
       <small>
         Plans + writes next week: every {{ s.planning_day|upper }} at {{ s.planning_time }}<br>
-        {% if next_runs.weekly %}Next planning run: {{ next_runs.weekly.strftime('%a %b %-d, %-I:%M %p') }}<br>{% endif %}
+        {% if next_runs.weekly %}Next planning run: {{ strf(next_runs.weekly, '%a %b %-d, %-I:%M %p') }}<br>{% endif %}
         Syncs products &amp; reviews every 6 hours · checks for due posts every 2 minutes · pulls stats every 3 hours.<br>
         Auto-approved posts can't go out sooner than {{ s.hold_hours|int }} h after they're created, so you always get a look.
       </small>
