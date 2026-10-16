@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import brain, config, db
+from . import brain, config, db, links
 from .publishers import REGISTRY, PublishError
 from .sources import etsy, photos, shopify
 from .studio import backdrops, compose
@@ -477,7 +477,9 @@ def publish_post(post_id: int, only_platform: str | None = None) -> dict:
                     media_url = shopify.upload_image(local, alt=post.get("overlay_text") or "")
                     db.run("UPDATE post_targets SET media_url = ? WHERE id = ?", (media_url, t["id"]))
                 res = pub.publish(caption=t["caption"] or "", media_path=str(local), media_url=media_url or "",
-                                  title=t.get("title") or "", link=t.get("link") or "", video_path=_video_for(t))
+                                  title=t.get("title") or "",
+                                  link=links.pin_link(post) if t["platform"] == "pinterest" else (t.get("link") or ""),
+                                  video_path=_video_for(t))
                 res_status, ext_id, ext_url = res.status, res.external_id, res.external_url
             db.run("UPDATE post_targets SET status=?, external_id=?, external_url=?, error=NULL, published_at=? "
                    "WHERE id=?", (res_status, ext_id, ext_url, db.iso(), t["id"]))

@@ -201,3 +201,5 @@ input.tagadd:focus { width: 130px; }
 .tagfilter { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .tagfilter #tagq { width: 220px; }
 .tagfilter .popular { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 5px; }
+.etsymatch { margin-top: 6px; gap: 6px; flex-wrap: nowrap; }
+.etsymatch select { max-width: 420px; padding: 4px 8px; font-size: 12.5px; }

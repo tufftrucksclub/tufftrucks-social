@@ -98,6 +98,10 @@
       {% if t.platform == 'pinterest' %}<div class="field"><label>Pin title</label><input type="text" name="title_pinterest" value="{{ t.title or '' }}" maxlength="100"></div>{% endif %}
       <textarea id="c_{{ t.platform }}" name="caption_{{ t.platform }}" style="min-height:{{ 90 if t.platform in ('x','tiktok') else 150 }}px">{{ t.caption or '' }}</textarea>
       {% if t.platform == 'tiktok' and s.tiktok_mode == 'inbox' %}<div class="hint">Inbox mode: TikTok doesn't accept a caption with drafts, so copy this one when you post from the app.</div>{% endif %}
+      {% if t.platform == 'pinterest' %}<div class="hint">This pin links to:
+        {% if pin_link %}<a href="{{ pin_link }}" target="_blank">{{ 'your Etsy listing' if pin_mode == 'etsy' else pin_link }} ↗</a>
+        {% elif pin_mode == 'etsy' %}nothing — this product has no Etsy match (set one on the <a href="/products">Products</a> page)
+        {% else %}nothing (Settings → Platforms){% endif %}</div>{% endif %}
       {% if t.platform == 'x' and not s.x_allow_links %}<div class="hint">Links are off for X (they cost ~13× more per post there).</div>{% endif %}
       {% if t.error %}<div class="err">{{ t.error }}</div>{% endif %}
       {% set m = metrics[t.id] %}

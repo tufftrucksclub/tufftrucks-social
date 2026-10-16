@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import agent, brain, config, db, scheduler
+from . import agent, brain, config, db, links, scheduler
 from .publishers import REGISTRY
 from .publishers import oauth as oauth_mod
 from .sources import etsy, icloud, shopify
@@ -285,7 +285,8 @@ def post_detail(request: Request, post_id: int):
                for t in post["targets"]}
     return templates.TemplateResponse(request, "post.html", ctx(
         request, nav="calendar", post=post, local_val=local_val, styles=backdrops.list_styles(),
-        video=video, metrics=metrics, photo=agent._pick_photo(post), placements=PLACEMENTS))
+        video=video, metrics=metrics, photo=agent._pick_photo(post), placements=PLACEMENTS,
+        pin_link=links.pin_link(post), pin_mode=links.pin_mode()))
 
 
 @app.post("/posts/{post_id}/save")
@@ -435,7 +436,26 @@ def review_hide(rid: str, hide: str = Form("1")):
 def products_page(request: Request, q: str = ""):
     rows = db.q("SELECT * FROM products WHERE status='active' AND (? = '' OR title LIKE ?) "
                 "ORDER BY COALESCE(last_featured_at,'0') ASC, title", (q, f"%{q}%"))
-    return templates.TemplateResponse(request, "products.html", ctx(request, nav="products", products=rows, q=q))
+    etsy_rows = links.etsy_listings()
+    picks = db.get_setting("etsy_matches") or {}
+    for r in rows:
+        if r["source"] == "shopify":
+            r["etsy"] = links.etsy_match(r, etsy_rows)
+            r["etsy_pick"] = picks.get(r["id"])          # None = automatic
+            r["etsy_auto"] = links.auto_match(r, etsy_rows)
+    return templates.TemplateResponse(request, "products.html", ctx(request, nav="products", products=rows, q=q,
+                                                                     etsy_rows=etsy_rows, pin_mode=links.pin_mode()))
+
+
+@app.post("/products/{pid:path}/etsy-match")
+def product_etsy_match(pid: str, etsy_id: str = Form("auto"), q: str = Form("")):
+    picks = dict(db.get_setting("etsy_matches") or {})
+    if etsy_id == "auto":
+        picks.pop(pid, None)
+    else:
+        picks[pid] = etsy_id if etsy_id != "none" else ""
+    db.set_setting("etsy_matches", picks)
+    return back("/products" + (f"?q={quote(q)}" if q else ""), "Etsy link saved.")
 
 
 # ---------------------------------------------------------------- studio
@@ -731,7 +751,7 @@ def settings_page(request: Request):
     return templates.TemplateResponse(request, "settings.html", ctx(
         request, nav="settings", conns=connections(), boards=boards, board_err=board_err, meta=meta,
         shopify_ok=shopify.configured(), etsy_ok=etsy.configured(), redirect=oauth_mod.redirect_uri,
-        ic=icloud.status(check=False),
+        ic=icloud.status(check=False), pin_modes=links.PIN_LINK_MODES, pin_mode=links.pin_mode(),
         day_keys=agent.DAY_KEYS))
 
 
@@ -749,6 +769,8 @@ async def settings_save(request: Request):
         db.set_setting("enabled_platforms", [p for p in config.PLATFORMS if form.get(f"enable_{p}") == "on"])
         db.set_setting("tiktok_mode", form.get("tiktok_mode", "inbox"))
         db.set_setting("x_allow_links", form.get("x_allow_links") == "on")
+        if form.get("pinterest_links") in links.PIN_LINK_MODES:
+            db.set_setting("pinterest_links", form.get("pinterest_links"))
         if form.get("pinterest_board_id") is not None:
             db.set_setting("pinterest_board_id", form.get("pinterest_board_id", ""))
     elif section == "cadence":

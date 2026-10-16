@@ -147,7 +147,8 @@ are forced to private. If you later pass the audit, switch Settings → TikTok t
 ## 8. X
 
 1. **developer.x.com** → create a Project + App → **User authentication settings**: OAuth 2.0, type
-   **Web App**, permissions **Read and write**, callback `http://localhost:8420/oauth/x/callback`.
+   **Web App**, permissions **Read and write**, callback `http://127.0.0.1:8420/oauth/x/callback`
+   (X doesn't accept `localhost`; Settings shows the exact URL to paste). Website URL: `https://tufftrucks.club`.
 2. Copy the OAuth 2.0 **Client ID** and **Client Secret** into `.env` → **Settings → Connect X**.
 3. Add credits in the X developer console (pay-per-use). Roughly 1.5¢ per post, ~20¢ if the post contains a
    link — so links are off for X by default (Settings → Platforms to change). Stats reads cost about half a cent

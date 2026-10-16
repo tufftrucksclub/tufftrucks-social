@@ -10,7 +10,7 @@ from datetime import date, timedelta
 
 from PIL import Image
 
-from . import config, db
+from . import config, db, links
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -213,6 +213,13 @@ def draft_captions(post: dict, product: dict | None, review: dict | None, photo:
                      + json.dumps({k: photo.get(k) for k in ("description", "subject", "shows_product", "edit")
                                    if photo.get(k) is not None}, indent=1))
     parts.append(x_rule)
+    pin_mode = links.pin_mode()
+    if pin_mode == "etsy":
+        parts.append("The pin links to our Etsy listing: in the Pinterest title and description don't mention a website "
+                     "or URL; 'tap through to our Etsy shop' or 'find it on Etsy' is fine.")
+    elif pin_mode == "none":
+        parts.append("Pinterest pins have no link for now: don't mention the website, a URL or 'link' in the Pinterest "
+                     "title or description — say 'search Tuff Trucks Club' or nothing.")
     parts.append("Don't invent fitment years, discounts, prices or shipping times that aren't in the data above.")
     system = ("You write social posts for a small truck-accessory shop. Each platform gets copy written for "
               "how people use that platform, not the same text pasted five times.\n\n" + _brand_block(s))

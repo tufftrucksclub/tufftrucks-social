@@ -5,7 +5,8 @@
   <h1 style="margin:0">Products</h1>
   <form class="row" method="get"><input type="text" name="q" value="{{ q }}" placeholder="Search products" style="width:240px"><button>Search</button></form>
 </div>
-<p class="muted" style="margin-top:0">Shopify products and Etsy listings, least-recently featured first. The planner leans the same way.</p>
+<p class="muted" style="margin-top:0">Shopify products and Etsy listings, least-recently featured first. The planner leans the same way.
+  {% if pin_mode == 'etsy' %}Pins link to each product's <b>Etsy listing</b> — check the matches below; “no link” products are pinned without one.{% endif %}</p>
 <div class="panel"><div class="list">
 {% for p in products %}
   {% set imgs = jl(p.images) %}
@@ -15,6 +16,18 @@
       <div class="one"><a href="{{ p.url }}" target="_blank">{{ p.title }}</a></div>
       <small>{{ p.source|title }} · {{ p.price or '' }} · {{ imgs|length }} photo{{ 's' if imgs|length != 1 }} ·
         {% if p.last_featured_at %}featured {{ p.times_featured }}× (last {{ fmt_local(p.last_featured_at, '%b %-d') }}){% else %}never featured{% endif %}</small>
+      {% if p.source == 'shopify' %}
+      <form class="row etsymatch" method="post" action="/products/{{ p.id }}/etsy-match">
+        <input type="hidden" name="q" value="{{ q }}">
+        <small>Etsy:</small>
+        <select name="etsy_id" onchange="this.form.submit()">
+          <option value="auto" {{ 'selected' if p.etsy_pick is none }}>Automatic — {{ p.etsy_auto.title if p.etsy_auto else 'no match found' }}</option>
+          <option value="none" {{ 'selected' if p.etsy_pick == '' }}>No link</option>
+          {% for e in etsy_rows %}<option value="{{ e.id }}" {{ 'selected' if p.etsy_pick == e.id }}>{{ e.title }}</option>{% endfor %}
+        </select>
+        {% if p.etsy %}<a href="{{ p.etsy.url }}" target="_blank" class="btn sm">View ↗</a>{% else %}<span class="pill warn">No Etsy link</span>{% endif %}
+      </form>
+      {% endif %}
     </div>
     <form class="inline" method="post" action="/posts/new"><input type="hidden" name="kind" value="product_spotlight"><input type="hidden" name="product_id" value="{{ p.id }}">
       <button class="sm primary">Spotlight</button></form>

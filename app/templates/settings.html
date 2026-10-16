@@ -68,6 +68,10 @@
         </select>
         <div class="hint">Changing this means reconnecting TikTok so it can ask for the right permission.</div></div>
       <label class="check"><input type="checkbox" name="x_allow_links" {{ 'checked' if s.x_allow_links }}> Allow links in X posts (~$0.20 per post instead of ~$0.015)</label>
+      <div class="field"><label>Pins link to</label>
+        <select name="pinterest_links">{% for k, v in pin_modes.items() %}<option value="{{ k }}" {{ 'selected' if k == pin_mode }}>{{ v }}</option>{% endfor %}</select>
+        <div class="hint">Pinterest blocks tufftrucks.club, so “Etsy listing” links each pin to the same product on Etsy.
+          Check the matches on the <a href="/products">Products</a> page; products without one go out with no link.</div></div>
       <div class="field"><label>Pinterest board</label>
         {% if boards %}
         <select name="pinterest_board_id"><option value="">— choose —</option>

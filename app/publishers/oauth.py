@@ -10,7 +10,10 @@ from .. import config, db
 
 
 def redirect_uri(platform: str) -> str:
-    return f"{config.PUBLIC_BASE_URL}/oauth/{platform}/callback"
+    base = config.PUBLIC_BASE_URL
+    if platform == "x":  # X rejects "localhost" callbacks; it wants the IP form for local apps
+        base = base.replace("://localhost", "://127.0.0.1")
+    return f"{base}/oauth/{platform}/callback"
 
 
 def new_state(platform: str, pkce: bool = False) -> tuple[str, str | None]:

@@ -114,6 +114,8 @@ DEFAULT_SETTINGS: dict = {
     "enabled_platforms": ["instagram", "facebook", "tiktok", "pinterest", "x"],
     "tiktok_mode": "inbox",       # inbox = drafts you finish in the app; direct = auto-post (needs TikTok audit)
     "x_allow_links": False,       # links on X cost ~13x more per post
+    "pinterest_links": "store",   # what pins link to: store | etsy (the matching Etsy listing) | none — see app/links.py
+    "etsy_matches": {},           # Shopify product id -> Etsy listing id you picked ("" = no link)
     "pinterest_board_id": "",
     # Cadence
     "posts_per_week": 5,
