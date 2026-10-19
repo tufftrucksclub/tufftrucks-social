@@ -10,12 +10,18 @@
 <div class="panel"><div class="list">
 {% for p in products %}
   {% set imgs = jl(p.images) %}
+  {% set row = 'spot' ~ loop.index %}
   <div class="li">
-    <img src="{{ img_src(imgs[0]) if imgs else '' }}" alt="">
+    <img class="main" src="{{ img_src(imgs[0]) if imgs else '' }}" alt="">
     <div class="grow">
       <div class="one"><a href="{{ p.url }}" target="_blank">{{ p.title }}</a></div>
       <small>{{ p.source|title }} · {{ p.price or '' }} · {{ imgs|length }} photo{{ 's' if imgs|length != 1 }} ·
         {% if p.last_featured_at %}featured {{ p.times_featured }}× (last {{ fmt_local(p.last_featured_at, '%b %-d') }}){% else %}never featured{% endif %}</small>
+      {% if imgs|length > 1 %}
+      <div class="thumbs" title="Choose the photo to spotlight">
+        {% for u in imgs %}<label><input type="radio" form="{{ row }}" name="source_image" value="{{ u }}" data-i="{{ loop.index0 }}" {{ 'checked' if loop.first }}><img src="{{ img_src(u) }}" alt="Photo {{ loop.index }}" loading="lazy"></label>{% endfor %}
+      </div>
+      {% endif %}
       {% if p.source == 'shopify' %}
       <form class="row etsymatch" method="post" action="/products/{{ p.id }}/etsy-match">
         <input type="hidden" name="q" value="{{ q }}">
@@ -29,10 +35,21 @@
       </form>
       {% endif %}
     </div>
-    <form class="inline" method="post" action="/posts/new"><input type="hidden" name="kind" value="product_spotlight"><input type="hidden" name="product_id" value="{{ p.id }}">
+    <form class="inline" id="{{ row }}" method="post" action="/posts/new"><input type="hidden" name="kind" value="product_spotlight"><input type="hidden" name="product_id" value="{{ p.id }}">
       <button class="sm primary">Spotlight</button></form>
-    <a class="btn sm" href="/studio?product_id={{ p.id|urlencode }}">Studio</a>
+    <a class="btn sm studio" href="/studio?product_id={{ p.id|urlencode }}">Studio</a>
   </div>
 {% else %}<div class="empty">No products yet — Sync from the dashboard.</div>{% endfor %}
 </div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+// picking a listing photo: show it as the row's thumbnail and open the Studio on it too
+document.querySelectorAll('.thumbs input').forEach(r => r.addEventListener('change', () => {
+  const li = r.closest('.li'), studio = li.querySelector('a.studio'), url = new URL(studio.href);
+  li.querySelector('img.main').src = r.nextElementSibling.src;
+  url.searchParams.set('img', r.dataset.i);
+  studio.href = url;
+}));
+</script>
 {% endblock %}

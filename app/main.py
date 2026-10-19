@@ -286,7 +286,49 @@ def post_detail(request: Request, post_id: int):
     return templates.TemplateResponse(request, "post.html", ctx(
         request, nav="calendar", post=post, local_val=local_val, styles=backdrops.list_styles(),
         video=video, metrics=metrics, photo=agent._pick_photo(post), placements=PLACEMENTS,
-        pin_link=links.pin_link(post), pin_mode=links.pin_mode()))
+        pin_link=links.pin_link(post), pin_mode=links.pin_mode(),
+        photo_groups=photo_choices(post), photo_current=current_photo_choice(post)))
+
+
+def photo_choices(post: dict) -> dict[str, list[dict]]:
+    """Photos you can swap into a post, by group: the product's listing photos, the review's photo, your library.
+    Values are 'url:<src>' (listing / review / other image) or 'lib:<photo id>'."""
+    groups: dict[str, list[dict]] = {}
+    seen = set()
+
+    def add(group, value, src, label):
+        if value not in seen and src:
+            seen.add(value)
+            groups.setdefault(group, []).append({"value": value, "src": src, "label": label})
+
+    if post.get("product"):
+        for i, u in enumerate(db.jl(post["product"]["images"])):
+            add("Product photos", "url:" + u, u, f"Listing photo {i + 1}")
+    rv = post.get("review") or {}
+    if rv.get("image_url"):
+        add("Review photo", "url:" + rv["image_url"], rv["image_url"], "Customer's photo")
+    src = post.get("source_image")
+    if src and not post.get("photo_id") and "url:" + src not in seen:  # e.g. picked in the Studio
+        groups = {"Current photo": [{"value": "url:" + src, "src": img_src(src), "label": "In use now"}], **groups}
+    lib = []
+    if post.get("photo"):  # the photo in use, plus its new-background versions
+        root = post["photo"].get("parent_id") or post["photo"]["id"]
+        lib += db.q("SELECT * FROM photos WHERE id IN (?, ?) OR parent_id = ? ORDER BY id = ? DESC, created_at",
+                    (post["photo"]["id"], root, root, post["photo"]["id"]))
+    lib += db.q("SELECT * FROM photos WHERE hidden = 0 AND score >= 6 "
+                "ORDER BY used_at IS NOT NULL, score DESC, taken_at DESC LIMIT 40")
+    for r in lib:
+        n = db.jl(r["notes"], {}) or {}
+        label = (f"★{r['score']} " if r["score"] else "") + (n.get("description") or r["filename"] or "")[:50]
+        add("Your photos", "lib:" + r["id"], img_src(str(config.DATA_DIR / r["local_path"])), label)
+    return groups
+
+
+def current_photo_choice(post: dict) -> str:
+    if post.get("photo_id"):
+        return "lib:" + post["photo_id"]
+    src = post.get("source_image") or agent._pick_photo(post)
+    return "url:" + src if src else ""
 
 
 @app.post("/posts/{post_id}/save")
@@ -299,11 +341,20 @@ async def post_save(request: Request, post_id: int):
     sched_iso = None
     if sched:
         sched_iso = db.iso(datetime.fromisoformat(sched).replace(tzinfo=agent.tz()))
-    old_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"))
+    old_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"),
+                  post.get("photo_id"))
     placement = form.get("placement") if form.get("placement") in PLACEMENTS else post.get("placement")
-    db.run("UPDATE posts SET overlay_text=?, backdrop=?, title=?, scheduled_at=?, placement=?, updated_at=? WHERE id=?",
+    photo_id, source_image = post.get("photo_id"), post.get("source_image")
+    choice = form.get("photo_choice") or ""
+    if choice and choice != current_photo_choice(post):
+        if choice.startswith("lib:") and photos_mod.get(choice[4:]):
+            photo_id, source_image = choice[4:], None
+        elif choice.startswith("url:") and choice[4:]:
+            photo_id, source_image = None, choice[4:]
+    db.run("UPDATE posts SET overlay_text=?, backdrop=?, title=?, scheduled_at=?, placement=?, photo_id=?, "
+           "source_image=?, updated_at=? WHERE id=?",
            (form.get("overlay_text", ""), form.get("backdrop", "garage"), form.get("subline", ""),
-            sched_iso, placement, db.iso(), post_id))
+            sched_iso, placement, photo_id, source_image, db.iso(), post_id))
     chosen = set(form.getlist("platforms"))
     for p in config.PLATFORMS:
         t = next((t for t in post["targets"] if t["platform"] == p), None)
@@ -316,7 +367,8 @@ async def post_save(request: Request, post_id: int):
             db.run("UPDATE post_targets SET caption=?, title=? WHERE id=?",
                    (form.get(f"caption_{t['platform']}"), form.get(f"title_{t['platform']}", t["title"]), t["id"]))
     post = agent.get_post(post_id)
-    new_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"))
+    new_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"),
+                  post.get("photo_id"))
     needs_media = new_visual != old_visual or any(not t.get("media_path") for t in post["targets"])
     if needs_media:
         agent.render_media(post)
@@ -399,7 +451,7 @@ def post_new(kind: str = Form(...), product_id: str = Form(""), review_id: str =
             notes = db.jl(r and r["photo_notes"], {}) or {}
         backdrop = notes.get("backdrop") if notes.get("backdrop") in backdrops.list_styles() else "garage"
     if photo_id and not headline:
-        ph = photos.get(photo_id)
+        ph = photos_mod.get(photo_id)
         headline = ((ph or {}).get("n") or {}).get("headline_idea") or ""
     post_id = agent.create_post(kind=kind, product_id=product_id or None, review_id=review_id or None,
                                 angle="", headline=headline, backdrop=backdrop, scheduled_at=sched,
@@ -464,7 +516,7 @@ PLACEMENTS = {"auto": "Auto", "cutout": "Cut out — new background", "full": "F
 
 
 @app.get("/studio", response_class=HTMLResponse)
-def studio(request: Request, product_id: str = "", review_id: str = "", photo_id: str = ""):
+def studio(request: Request, product_id: str = "", review_id: str = "", photo_id: str = "", img: int = 0):
     photos = []
     for r in db.q("SELECT * FROM photos WHERE hidden=0 AND (score IS NULL OR score >= 5) "
                   "ORDER BY source='edit' DESC, COALESCE(score,0) DESC, taken_at DESC LIMIT 150"):
@@ -474,7 +526,8 @@ def studio(request: Request, product_id: str = "", review_id: str = "", photo_id
                         "group": "New backgrounds" if r["source"] == "edit" else "Your photos",
                         "placement": n.get("placement") or "", "backdrop": n.get("suggested_backdrop") or ""})
     for p in db.q("SELECT id, title, images FROM products WHERE status='active' ORDER BY title LIMIT 200"):
-        for i, u in enumerate(db.jl(p["images"])[:4]):
+        imgs = db.jl(p["images"])
+        for i, u in enumerate(imgs if p["id"] == product_id else imgs[:4]):
             photos.append({"src": u, "label": p["title"][:60] + (f" ({i + 1})" if i else ""), "group": "Products"})
     for r in db.q("SELECT id, text, image_url FROM reviews WHERE image_url IS NOT NULL AND image_url != '' AND hidden=0 LIMIT 100"):
         photos.append({"src": r["image_url"], "label": "Review: " + (r["text"] or "")[:50], "group": "Review photos"})
@@ -485,7 +538,7 @@ def studio(request: Request, product_id: str = "", review_id: str = "", photo_id
     elif product_id:
         p = db.q1("SELECT images FROM products WHERE id = ?", (product_id,))
         imgs = db.jl(p["images"]) if p else []
-        preselect = imgs[0] if imgs else ""
+        preselect = imgs[img if 0 <= img < len(imgs) else 0] if imgs else ""
     elif review_id:
         r = db.q1("SELECT image_url FROM reviews WHERE id = ?", (review_id,))
         preselect, pre_layout = (r["image_url"] if r else "") or "", "review_photo"

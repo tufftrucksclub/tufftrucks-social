@@ -55,6 +55,19 @@
         <select name="placement">{% for k, v in placements.items() %}<option value="{{ k }}" {{ 'selected' if k == (post.placement or 'auto') }}>{{ v }}</option>{% endfor %}</select>
         <div class="hint">“Cut out” replaces the photo's background with the backdrop above.</div></div>{% endif %}
       {% if photo %}<div class="hint" style="margin-top:10px">Photo: <a href="{{ img_src(photo) }}" target="_blank">source image ↗</a></div>{% endif %}
+      {% if photo_groups %}
+      <details class="newbg photopick" style="margin-top:12px" {{ 'open' if not photo }}>
+        <summary>Choose another photo</summary>
+        {% for group, items in photo_groups.items() %}
+        <div class="hint" style="margin:8px 0 4px">{{ group }}</div>
+        <div class="swatches">{% for c in items %}
+          <label title="{{ c.label }}"><input type="radio" name="photo_choice" value="{{ c.value }}" {{ 'checked' if c.value == photo_current }}>
+            <span><img src="{{ c.src }}" alt="" loading="lazy"><em>{{ c.label }}</em></span></label>
+        {% endfor %}</div>
+        {% endfor %}
+        <div class="hint" id="photopick-hint">Pick one, then <b>Save changes</b> to re-render the graphics with it.</div>
+      </details>
+      {% endif %}
       {% if post.review %}
       <hr><h3>From the Etsy review</h3>
       <div class="stars">{{ '★' * post.review.rating }}{{ '☆' * (5 - post.review.rating) }}</div>
@@ -125,6 +138,9 @@ tabs.forEach(b => b.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('on')); b.classList.add('on');
   pv.innerHTML = b.dataset.video ? `<video src="${b.dataset.video}" controls autoplay muted loop playsinline></video>`
                                  : (b.dataset.src ? `<img src="${b.dataset.src}" alt="">` : '<span class="muted">Not rendered yet</span>');
+}));
+document.querySelectorAll('input[name=photo_choice]').forEach(r => r.addEventListener('change', () => {
+  document.getElementById('photopick-hint').innerHTML = '<span class="why">New photo picked — click <b>Save changes</b> to use it.</span>';
 }));
 document.querySelectorAll('.count').forEach(c => {
   const ta = document.getElementById(c.dataset.for), max = +c.dataset.max;

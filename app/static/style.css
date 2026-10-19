@@ -203,3 +203,12 @@ input.tagadd:focus { width: 130px; }
 .tagfilter .popular { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 5px; }
 .etsymatch { margin-top: 6px; gap: 6px; flex-wrap: nowrap; }
 .etsymatch select { max-width: 420px; padding: 4px 8px; font-size: 12.5px; }
+/* product photo picker */
+.thumbs { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+.thumbs label { margin: 0; cursor: pointer; }
+.thumbs input { display: none; }
+.li .thumbs img { width: 34px; height: 42px; border-radius: 6px; border: 2px solid var(--line); opacity: .7; }
+.thumbs label:hover img { opacity: 1; }
+.thumbs input:checked + img { border-color: var(--blue); opacity: 1; }
+/* post editor: choose another photo */
+.photopick .swatches { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); max-height: 300px; }
