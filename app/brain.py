@@ -87,6 +87,11 @@ PLAN_TOOL = {
                         "angle": {"type": "string", "description": "The hook/idea in one sentence."},
                         "headline": {"type": "string", "description": "Text burned onto the graphic, max 6 words, punchy."},
                         "backdrop": {"type": "string"},
+                        "video_style": {"type": "string", "enum": ["quick", "showcase", "review"],
+                                        "description": "How the post's short video (TikTok / Reels) moves."},
+                        "video_photo_ids": {"type": "array", "items": {"type": "string"},
+                                            "description": "Up to 3 more library photo ids to show in the video "
+                                                           "(other angles of the same product or truck), or empty."},
                         "platforms": {"type": "array", "items": {"type": "string", "enum": config.PLATFORMS}},
                         "why": {"type": "string"},
                     },
@@ -140,6 +145,12 @@ Post kinds:
   star. Needs photo_id. Add product_id too when you can tell which product is in it.
 Any non-review post may set photo_id to use a library photo instead of the listing photo. Prefer high scores and
 photos that show our products; don't use the same photo twice.
+
+Every post also becomes a 6-20 second vertical video (TikTok, and Reels on Instagram/Facebook) made from its
+photos. video_style: quick = fast cuts with a punch-in on each photo (product spotlights, promos; best when there are
+several photos); showcase = slow smooth moves and crossfades (one great photo, builds, behind the scenes); review =
+the customer's quote types in over their photo (review posts). The video opens with the headline, so make it a
+scroll-stopping hook. Add video_photo_ids when the library has more shots of the same thing.
 
 Backdrop styles available: {', '.join(backdrop_styles)}.
 Match the backdrop to the vibe (e.g. neon for bold colors, trail for off-road builds, garage for gritty,

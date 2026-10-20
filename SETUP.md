@@ -9,7 +9,8 @@ Raspberry Pi (same idea as the order desk) and you use it from any browser on yo
 2. Has Claude rate every new review photo (is it sharp, does it show the product, is a plate or face visible?).
 3. Sunday afternoon: Claude reviews last month's results, then plans next week — which products, which reviews,
    which backdrop, which day — and writes separate copy for Instagram, Facebook, TikTok, Pinterest and X.
-4. Renders every graphic in each platform's size (plus a short slow-zoom video for TikTok).
+4. Renders every graphic in each platform's size, plus a 6–20 second video from the post's photos for TikTok and
+   Instagram / Facebook Reels (see **Videos** below).
 5. Product spotlights auto-approve. Review posts, promos, and anything Claude isn't sure about wait for your OK.
 6. Publishes on schedule, then pulls likes/comments/shares/saves so next week's plan leans toward what worked.
 
@@ -190,7 +191,8 @@ program closes or updates. Stop it with `stop-social.vbs`.
 The computer needs to be on for posts to go out. If it's off at posting time, the post goes out when it's back
 (the dashboard shows anything that failed, with a Retry button).
 
-**Raspberry Pi tip:** background removal and video rendering are slow on a Pi. Set `REMBG_MODEL=u2netp` in `.env`
+**Raspberry Pi tip:** background removal and video rendering are slow on a Pi (a video takes 15–60 s on a PC,
+several minutes on a Pi). Set `REMBG_MODEL=u2netp` in `.env`
 for faster cut-outs; planning runs in the background either way.
 
 ---
@@ -213,6 +215,16 @@ for faster cut-outs; planning runs in the background either way.
 - **Studio** — any product, review or library photo on any backdrop, every size at once. Placement *Cut out*
   replaces the photo's background with the backdrop; *Full photo* fills the frame. Upload your own backdrops
   (shop, trail, truck meet) and they show up as styles.
+- **Videos** — every post gets a short vertical video made from its photos: each photo zooms and pans, the
+  headline pops in as the hook, the product name or review quote animates in, and it ends on a "Link in bio" card
+  with your web address. TikTok always gets the video; Instagram and Facebook get it as a **Reel** instead of the
+  image (Settings → Video; each post can override it). Three styles: *Quick cuts* (fast, punchy — product
+  spotlights), *Showcase* (slow, smooth — builds and behind the scenes) and *Review* (the customer's quote types
+  in over their photo). Claude picks one when it plans; change it on the post page, where you can also pick which
+  photos go in and in what order. Product listing photos on a white background are cut out onto the backdrop.
+  **Music:** drop royalty-free tracks (MP3 / M4A / WAV) into `data/music` and each video gets one (or choose one per
+  post). Only use music you have the rights to — YouTube Audio Library and Pixabay Music are free. TikTok's trending
+  sounds can't be added by apps, but in inbox mode you can add one in the TikTok app before you post.
 - **Insights** — numbers by platform and post type; **Ask Claude what's working** writes a plain-English review
   that next week's planner reads.
 
@@ -224,6 +236,7 @@ but a quick "mind if we share your pic?" message on Etsy is the safe, friendly m
 | Problem | Fix |
 |---|---|
 | Instagram: "media URL" / "could not fetch" | Run Settings → Shopify → Test upload; the image must be on a public link. |
+| Reel fails / "video isn't rendered" | Open the post and **Save changes** to re-render the video; check the activity log for ffmpeg errors. |
 | Facebook: permissions error | The system-user token is missing `pages_manage_posts` or the Page asset. Regenerate it. |
 | TikTok draft never arrives | Update the TikTok app (inbox drafts need a recent version); check you approved `video.upload`. |
 | Pinterest pins don't show up publicly | Still on Trial access — request Standard access. |

@@ -593,26 +593,3 @@ def preview_bytes(spec: dict, fmt: str, max_side: int = 720) -> bytes:
     img.save(buf, "JPEG", quality=82)
     return buf.getvalue()
 
-
-def make_video(image_path: Path, out: Path, seconds: float = 7.0) -> Path:
-    """Turn a 1080x1920 graphic into a short slow-zoom MP4 (for TikTok / Reels).
-    Includes a silent audio track; add trending audio in the TikTok app."""
-    import shutil
-    import subprocess
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        try:
-            import imageio_ffmpeg
-            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        except ImportError as e:
-            raise RuntimeError("ffmpeg not found — install it (sudo apt install ffmpeg)") from e
-    fps = 30
-    frames = int(seconds * fps)
-    vf = (f"scale=2160:-2,zoompan=z='min(zoom+0.0007,1.15)':d={frames}:"
-          f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps={fps},format=yuv420p")
-    cmd = [ffmpeg, "-y", "-loglevel", "error", "-loop", "1", "-i", str(image_path),
-           "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-           "-vf", vf, "-t", f"{seconds}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-           "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(out)]
-    subprocess.run(cmd, check=True, timeout=300)
-    return out

@@ -307,9 +307,9 @@ def by_path(path: str) -> dict | None:
     return get(row["id"]) if row else None
 
 
-def best_image(pid: str) -> str:
+def best_image(pid: str, fetch: bool = True) -> str:
     """Path of the best copy of a photo for rendering a post: the original (fetched from iCloud once,
-    if possible), otherwise the preview."""
+    if possible — skipped with fetch=False), otherwise the preview."""
     row = get(pid)
     if not row:
         raise KeyError(pid)
@@ -319,6 +319,8 @@ def best_image(pid: str) -> str:
         orig = row.get("original_path")
         if orig and (config.DATA_DIR / orig).exists():
             return str(config.DATA_DIR / orig)
+        if not fetch:
+            return str(config.DATA_DIR / row["local_path"])
         try:
             svc = icloud.api()
             album, _ = _album(svc, row.get("album") or "")

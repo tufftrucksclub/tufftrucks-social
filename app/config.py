@@ -140,6 +140,10 @@ DEFAULT_SETTINGS: dict = {
     "accent_color_2": "#FF3D7F",
     "watermark": "TUFFTRUCKS.CLUB",
     "timezone": "America/New_York",
+    # Videos (TikTok + Reels) — see app/studio/video.py
+    "reels_platforms": ["instagram", "facebook"],  # post the video as a Reel here instead of the image
+    "video_music": "random",      # random = a track from data/music each video; none = silent
+    "video_cta": "LINK IN BIO",   # big text on the video's end card, above your web address
     # Photo library (iCloud + folders)
     "icloud_apple_id": "",
     "photos_album": "",           # blank = whole library; or an album / shared album name, e.g. "Tuff Trucks"

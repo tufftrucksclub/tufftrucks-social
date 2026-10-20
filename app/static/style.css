@@ -212,3 +212,6 @@ input.tagadd:focus { width: 130px; }
 .thumbs input:checked + img { border-color: var(--blue); opacity: 1; }
 /* post editor: choose another photo */
 .photopick .swatches { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); max-height: 300px; }
+.vpick .swatches label { position: relative; }
+.vpick .swatches label[data-n]::after { content: attr(data-n); position: absolute; top: 5px; left: 5px; min-width: 22px; height: 22px;
+  border-radius: 11px; background: var(--blue); color: #fff; font: 700 12px/22px system-ui, sans-serif; text-align: center; }

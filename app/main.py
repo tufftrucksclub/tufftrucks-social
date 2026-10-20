@@ -19,7 +19,7 @@ from .publishers import REGISTRY
 from .publishers import oauth as oauth_mod
 from .sources import etsy, icloud, shopify
 from .sources import photos as photos_mod
-from .studio import backdrops, bgswap, compose
+from .studio import backdrops, bgswap, compose, video as video_mod
 
 BASE = Path(__file__).parent
 app = FastAPI(title="Tuff Trucks Social")
@@ -48,7 +48,8 @@ def run_bg(name: str, label: str, fn, *args, **kw) -> None:
 
 
 def running_jobs() -> list[str]:
-    return [j["label"] for j in _jobs.values() if j.get("running")]
+    return ([j["label"] for j in _jobs.values() if j.get("running")]
+            + [f"Rendering the video for post #{i}" for i in agent.videos_rendering()])
 
 
 # ------------------------------------------------------------------ helpers
@@ -275,24 +276,25 @@ def post_detail(request: Request, post_id: int):
         raise HTTPException(404)
     sched = db.parse_iso(post["scheduled_at"])
     local_val = sched.astimezone(agent.tz()).strftime("%Y-%m-%dT%H:%M") if sched else ""
-    video = ""
-    tt = next((t for t in post["targets"] if t["platform"] == "tiktok"), None)
-    if tt:
-        v = agent._video_for(tt)
-        if v:
-            video = media_url(str(Path(v).relative_to(config.DATA_DIR)))
+    v = agent.video_file(post_id)
+    video = media_url(str(Path(v).relative_to(config.DATA_DIR))) if v else ""
     metrics = {t["id"]: db.q1("SELECT * FROM metrics WHERE target_id=? ORDER BY id DESC LIMIT 1", (t["id"],))
                for t in post["targets"]}
     return templates.TemplateResponse(request, "post.html", ctx(
         request, nav="calendar", post=post, local_val=local_val, styles=backdrops.list_styles(),
         video=video, metrics=metrics, photo=agent._pick_photo(post), placements=PLACEMENTS,
         pin_link=links.pin_link(post), pin_mode=links.pin_mode(),
-        photo_groups=photo_choices(post), photo_current=current_photo_choice(post)))
+        photo_groups=photo_choices(post, extra=agent.video_choices(post)), photo_current=current_photo_choice(post),
+        wants_video=agent.wants_video(post), video_rendering=post_id in agent.videos_rendering(),
+        video_styles=video_mod.STYLES, video_style=agent.video_style(post), tracks=video_mod.music_tracks(),
+        video_picked=agent.video_choices(post), video_auto=agent.auto_video_choices(post), video_custom=bool(db.jl(post.get("video_photos"))),
+        has_meta=any(t["platform"] in ("instagram", "facebook") for t in post["targets"]),
+        reel_on=any(agent.as_reel(post, t["platform"]) for t in post["targets"])))
 
 
-def photo_choices(post: dict) -> dict[str, list[dict]]:
-    """Photos you can swap into a post, by group: the product's listing photos, the review's photo, your library.
-    Values are 'url:<src>' (listing / review / other image) or 'lib:<photo id>'."""
+def photo_choices(post: dict, extra: list[str] = ()) -> dict[str, list[dict]]:
+    """Photos you can swap into a post (or use in its video), by group: the product's listing photos, the review's
+    photo, your library. Values are 'url:<src>' (listing / review / other image) or 'lib:<photo id>'."""
     groups: dict[str, list[dict]] = {}
     seen = set()
 
@@ -321,14 +323,16 @@ def photo_choices(post: dict) -> dict[str, list[dict]]:
         n = db.jl(r["notes"], {}) or {}
         label = (f"★{r['score']} " if r["score"] else "") + (n.get("description") or r["filename"] or "")[:50]
         add("Your photos", "lib:" + r["id"], img_src(str(config.DATA_DIR / r["local_path"])), label)
+    for v in extra:  # e.g. photos the video uses that aren't in the lists above
+        if v.startswith("lib:") and (r := photos_mod.get(v[4:])):
+            add("Your photos", v, img_src(str(config.DATA_DIR / r["local_path"])), r["filename"] or "Library photo")
+        elif v.startswith("url:"):
+            add("Other photos", v, img_src(v[4:]), "Photo")
     return groups
 
 
 def current_photo_choice(post: dict) -> str:
-    if post.get("photo_id"):
-        return "lib:" + post["photo_id"]
-    src = post.get("source_image") or agent._pick_photo(post)
-    return "url:" + src if src else ""
+    return agent.main_photo_choice(post)
 
 
 @app.post("/posts/{post_id}/save")
@@ -343,6 +347,8 @@ async def post_save(request: Request, post_id: int):
         sched_iso = db.iso(datetime.fromisoformat(sched).replace(tzinfo=agent.tz()))
     old_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"),
                   post.get("photo_id"))
+    old_video = (post.get("video_style"), post.get("video_photos"), post.get("video_music"), post.get("reels"),
+                 tuple(t["platform"] for t in post["targets"]))
     placement = form.get("placement") if form.get("placement") in PLACEMENTS else post.get("placement")
     photo_id, source_image = post.get("photo_id"), post.get("source_image")
     choice = form.get("photo_choice") or ""
@@ -362,6 +368,7 @@ async def post_save(request: Request, post_id: int):
             db.run("INSERT INTO post_targets(post_id, platform, status) VALUES(?, ?, 'pending')", (post_id, p))
         elif p not in chosen and t and t["status"] in ("pending", "failed"):
             db.run("DELETE FROM post_targets WHERE id=?", (t["id"],))
+    save_video_options(post_id, form)
     for t in db.q("SELECT * FROM post_targets WHERE post_id=?", (post_id,)):
         if f"caption_{t['platform']}" in form:
             db.run("UPDATE post_targets SET caption=?, title=? WHERE id=?",
@@ -369,16 +376,48 @@ async def post_save(request: Request, post_id: int):
     post = agent.get_post(post_id)
     new_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"),
                   post.get("photo_id"))
+    new_video = (post.get("video_style"), post.get("video_photos"), post.get("video_music"), post.get("reels"),
+                 tuple(t["platform"] for t in post["targets"]))
     needs_media = new_visual != old_visual or any(not t.get("media_path") for t in post["targets"])
     if needs_media:
-        agent.render_media(post)
+        agent.render_media(post, with_video=False)
+    needs_video = (needs_media or new_video != old_video
+                   or (agent.wants_video(post) and not agent.video_file(post_id)))
+    if needs_video:
+        agent.queue_video(post_id)
     # edits to an auto-approved post put it back in your hands
     if post["status"] == "approved" and post["approval"] == "auto":
         db.run("UPDATE posts SET status='needs_approval', approval=NULL WHERE id=?", (post_id,))
     action = form.get("action", "save")
     if action == "approve":
         return post_approve(post_id)
-    return back(f"/posts/{post_id}", "Saved." + (" Graphics re-rendered." if needs_media else ""))
+    return back(f"/posts/{post_id}", "Saved." + (" Graphics re-rendered." if needs_media else "")
+                + (" The video is rendering — this page refreshes when it's ready." if needs_video else ""))
+
+
+def save_video_options(post_id: int, form) -> None:
+    if "video_style" not in form:
+        return
+    post = agent.get_post(post_id)
+    style = form.get("video_style") if form.get("video_style") in video_mod.STYLES else None
+    music = form.get("video_music") or None
+    if music not in (None, "none") and music not in video_mod.music_tracks():
+        music = post.get("video_music")
+    picked = None
+    if form.get("video_photos_mode") == "custom":
+        try:
+            picked = [c for c in json.loads(form.get("video_photos") or "[]")
+                      if isinstance(c, str) and c[:4] in ("lib:", "url:")][:7] or None
+        except ValueError:
+            picked = None
+    reels = post.get("reels")
+    if "reels_shown" in form:
+        want = form.get("reels") == "on"
+        default = any(agent.as_reel(post, p, setting_only=True) for p in ("instagram", "facebook")
+                      if any(t["platform"] == p for t in post["targets"]))
+        reels = None if want == default else int(want)
+    db.run("UPDATE posts SET video_style=?, video_music=?, video_photos=?, reels=? WHERE id=?",
+           (style, music, json.dumps(picked) if picked else None, reels, post_id))
 
 
 @app.post("/posts/{post_id}/approve")
@@ -805,7 +844,7 @@ def settings_page(request: Request):
         request, nav="settings", conns=connections(), boards=boards, board_err=board_err, meta=meta,
         shopify_ok=shopify.configured(), etsy_ok=etsy.configured(), redirect=oauth_mod.redirect_uri,
         ic=icloud.status(check=False), pin_modes=links.PIN_LINK_MODES, pin_mode=links.pin_mode(),
-        day_keys=agent.DAY_KEYS))
+        day_keys=agent.DAY_KEYS, tracks=video_mod.music_tracks(), music_dir=str(video_mod.music_dir())))
 
 
 @app.post("/settings")
@@ -826,6 +865,10 @@ async def settings_save(request: Request):
             db.set_setting("pinterest_links", form.get("pinterest_links"))
         if form.get("pinterest_board_id") is not None:
             db.set_setting("pinterest_board_id", form.get("pinterest_board_id", ""))
+    elif section == "video":
+        db.set_setting("reels_platforms", [p for p in ("instagram", "facebook") if form.get(f"reels_{p}") == "on"])
+        db.set_setting("video_music", "none" if form.get("video_music") == "none" else "random")
+        db.set_setting("video_cta", (form.get("video_cta") or "").strip()[:40])
     elif section == "cadence":
         db.set_setting("posts_per_week", int(form.get("posts_per_week") or 5))
         db.set_setting("review_posts_per_week", int(form.get("review_posts_per_week") or 2))

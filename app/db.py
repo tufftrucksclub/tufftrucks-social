@@ -185,7 +185,11 @@ def conn() -> sqlite3.Connection:
 
 # Columns added after the first release; CREATE TABLE IF NOT EXISTS won't add them to an existing db.
 _ADDED_COLUMNS = {
-    "posts": {"photo_id": "TEXT", "placement": "TEXT"},
+    "posts": {"photo_id": "TEXT", "placement": "TEXT",
+              "video_style": "TEXT",     # quick | showcase | review; NULL = picked from the post kind
+              "video_photos": "TEXT",    # JSON list of 'url:<src>' / 'lib:<photo id>'; NULL = picked automatically
+              "video_music": "TEXT",     # a file in data/music, 'none', or NULL = the Settings default
+              "reels": "INTEGER"},       # 1/0 = post the video as a Reel on Instagram/Facebook; NULL = Settings
     "photos": {"tags": "TEXT"},     # JSON list of lowercase tags; Claude suggests them, you edit them
 }
 

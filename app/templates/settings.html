@@ -81,6 +81,26 @@
       <button class="primary" style="margin-top:12px">Save</button>
     </form>
 
+    <form class="panel" method="post" action="/settings" id="video">
+      <input type="hidden" name="section" value="video">
+      <h2>Video</h2>
+      <div class="hint">Every post gets a short video made from its photos: TikTok always uses it, and Instagram / Facebook
+        can post it as a Reel instead of the image (Reels reach far more people than photo posts). Each post can override this.</div>
+      <div class="row" style="margin-top:8px">{% for p in ['instagram', 'facebook'] %}<label class="check"><input type="checkbox" name="reels_{{ p }}" {{ 'checked' if p in s.reels_platforms }}> Reels on {{ labels[p] }}</label>{% endfor %}</div>
+      <div class="field" style="margin-top:10px"><label>Music</label>
+        <select name="video_music">
+          <option value="random" {{ 'selected' if s.video_music != 'none' }}>A random track from my music folder</option>
+          <option value="none" {{ 'selected' if s.video_music == 'none' }}>No music</option>
+        </select>
+        <div class="hint">Put royalty-free tracks (MP3 / M4A / WAV) in <code>{{ music_dir }}</code> —
+          {% if tracks %}{{ tracks|length }} there now: {{ tracks|join(', ') }}{% else %}it's empty right now{% endif %}.
+          Only use music you have the rights to (YouTube Audio Library, Pixabay Music, or a paid library).
+          TikTok's trending sounds can't be added by apps, but in inbox mode you can add one in the TikTok app before posting.</div></div>
+      <div class="field"><label>End-card text</label><input type="text" name="video_cta" maxlength="40" value="{{ s.video_cta }}">
+        <div class="hint">Big text on the last second of every video, above your watermark ({{ s.watermark or 'web address' }}).</div></div>
+      <button class="primary" style="margin-top:12px">Save</button>
+    </form>
+
     <form class="panel" method="post" action="/settings">
       <input type="hidden" name="section" value="cadence">
       <h2>Cadence</h2>

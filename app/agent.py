@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 import traceback
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -11,7 +12,7 @@ from zoneinfo import ZoneInfo
 from . import brain, config, db, links
 from .publishers import REGISTRY, PublishError
 from .sources import etsy, photos, shopify
-from .studio import backdrops, compose
+from .studio import backdrops, compose, video
 
 DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 REVIEW_KINDS = ("review", "review_photo")
@@ -237,7 +238,11 @@ def plan_week(week_start: date | None = None, replace: bool = False) -> dict:
         post_id = create_post(kind=kind, product_id=pid, review_id=rid, angle=item.get("angle", ""),
                               headline=item.get("headline", ""), backdrop=item.get("backdrop", "garage"),
                               scheduled_at=sched, platforms=platforms, created_by="planner", week=week_key,
-                              photo_id=phid)
+                              photo_id=phid, video_style=item.get("video_style"))
+        extra = [i for i in (item.get("video_photo_ids") or []) if i in photo_ids and i != phid][:3]
+        if extra:   # the planner's extra shots go after the first photos the video would pick anyway
+            picks = list(dict.fromkeys(auto_video_choices(get_post(post_id))[:3] + ["lib:" + i for i in extra]))
+            db.run("UPDATE posts SET video_photos = ? WHERE id = ?", (json.dumps(picks), post_id))
         used_days.add(day)
         if phid:
             used_photos.add(phid)
@@ -280,7 +285,7 @@ def _fallback_plan(products, reviews, styles) -> dict:
 # ================================================================ post build
 def create_post(*, kind, product_id=None, review_id=None, angle="", headline="", backdrop="garage",
                 scheduled_at: datetime | None = None, platforms=None, created_by="manual", week=None,
-                source_image=None, photo_id=None, placement=None) -> int:
+                source_image=None, photo_id=None, placement=None, video_style=None) -> int:
     now = db.iso()
     if photo_id:
         ph = photos.get(photo_id)
@@ -290,10 +295,12 @@ def create_post(*, kind, product_id=None, review_id=None, angle="", headline="",
                 backdrop = ph["n"]["suggested_backdrop"]
     post_id = db.run(
         """INSERT INTO posts(kind, title, angle, product_id, review_id, source_image, backdrop, overlay_text,
-                             scheduled_at, status, created_by, week, created_at, updated_at, photo_id, placement)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)""",
+                             scheduled_at, status, created_by, week, created_at, updated_at, photo_id, placement,
+                             video_style)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)""",
         (kind, "", angle, product_id, review_id, source_image, backdrop, headline,
-         db.iso(scheduled_at) if scheduled_at else None, created_by, week, now, now, photo_id, placement))
+         db.iso(scheduled_at) if scheduled_at else None, created_by, week, now, now, photo_id, placement,
+         video_style if video_style in video.STYLES else None))
     for p in platforms or db.get_setting("enabled_platforms"):
         db.run("INSERT OR IGNORE INTO post_targets(post_id, platform, status) VALUES(?, ?, 'pending')", (post_id, p))
     return post_id
@@ -401,21 +408,27 @@ def build_post(post_id: int, redraft: bool = True) -> dict:
     return get_post(post_id)
 
 
-def render_media(post: dict) -> None:
+def _still_spec(post: dict) -> dict:
     photo = _pick_photo(post)
     rv = post.get("review") or {}
     placement = post.get("placement") or "auto"
     if post["kind"] in REVIEW_KINDS and not post.get("placement"):
         placement = (db.jl(rv.get("photo_notes"), {}) or {}).get("placement") or "framed"
-    spec = {"layout": _layout(post, photo), "photo": photo, "placement": placement,
+    return {"layout": _layout(post, photo), "photo": photo, "placement": placement,
             "backdrop": post.get("backdrop") or "garage", "headline": post.get("overlay_text") or "",
             "subline": post.get("title") or (post.get("product") or {}).get("title", "")[:60],
             "review_text": rv.get("text") if post["kind"] in REVIEW_KINDS else None,
             "rating": rv.get("rating") or 5}
+
+
+def render_media(post: dict, with_video: bool = True) -> None:
+    """Render the graphic for each platform, then the video (pass with_video=False and call queue_video
+    to render it in the background instead)."""
+    spec = _still_spec(post)
     out_dir = config.MEDIA_DIR / f"post_{post['id']}"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = db.utcnow().strftime("%H%M%S")
-    for old in out_dir.glob("*"):
+    for old in out_dir.glob("*.jpg"):
         old.unlink()
     rendered: dict[str, Path] = {}
     for t in post["targets"]:
@@ -424,11 +437,176 @@ def render_media(post: dict) -> None:
             rendered[fmt] = compose.render_to_file(spec, fmt, out_dir / f"{fmt}_{stamp}.jpg")
         rel = str(rendered[fmt].relative_to(config.DATA_DIR))
         db.run("UPDATE post_targets SET media_path = ?, media_url = NULL WHERE id = ?", (rel, t["id"]))
-    if "story" in rendered:
-        try:
-            compose.make_video(rendered["story"], out_dir / f"story_{stamp}.mp4")
+    if with_video:
+        render_video(get_post(post["id"]))
+
+
+# ================================================================ video (TikTok + Reels)
+def video_style(post: dict) -> str:
+    if post.get("video_style") in video.STYLES:
+        return post["video_style"]
+    if post["kind"] in REVIEW_KINDS:
+        return "review"
+    return "showcase" if post["kind"] in ("showcase", "behind_scenes") else "quick"
+
+
+def as_reel(post: dict, platform: str, setting_only: bool = False) -> bool:
+    """Does this platform get the video as a Reel instead of the image?"""
+    if platform not in ("instagram", "facebook"):
+        return False
+    if post.get("reels") is not None and not setting_only:
+        return bool(post["reels"])
+    return platform in (db.get_setting("reels_platforms") or [])
+
+
+def wants_video(post: dict) -> bool:
+    return any(t["platform"] == "tiktok" or as_reel(post, t["platform"]) for t in post["targets"])
+
+
+def main_photo_choice(post: dict) -> str:
+    """The post's main photo as a picker value: 'lib:<photo id>' or 'url:<src>'."""
+    if post.get("photo_id"):
+        return "lib:" + post["photo_id"]
+    src = post.get("source_image") or _pick_photo(post)
+    return "url:" + src if src else ""
+
+
+def _library_for_product(product: dict, limit: int = 2) -> list[str]:
+    """Your best library photos whose tags name this product's vehicle or design (e.g. 'bronco', 'zebra print').
+    Tags that fit much of the catalog ('tow hook covers', 'truck') don't count."""
+    def text_of(p):
+        return " ".join([p.get("title") or ""] + db.jl(p.get("tags"))).lower()
+    text = text_of(product)
+    catalog = [text_of(p) for p in db.q("SELECT title, tags FROM products WHERE status = 'active'")]
+    cap = max(3, len(catalog) // 20)
+    out = []
+    for r in db.q("SELECT * FROM photos WHERE hidden = 0 AND score >= 7 AND parent_id IS NULL "
+                  "ORDER BY score DESC, taken_at DESC LIMIT 300"):
+        n = db.jl(r.get("notes"), {}) or {}
+        tags = [t for t in photos.tags_of(r) if len(t) >= 4 and t in text and sum(t in c for c in catalog) <= cap]
+        if n.get("shows_product") and tags:
+            out.append("lib:" + r["id"])
+            if len(out) >= limit:
+                break
+    return out
+
+
+def auto_video_choices(post: dict) -> list[str]:
+    """Photos for the video when you haven't picked them: the main photo first, then the product's other
+    listing photos, the customer's photo, and library photos tagged with this product."""
+    out: list[str] = []
+    rv = post.get("review") or {}
+    if post["kind"] in REVIEW_KINDS and rv.get("image_url"):
+        out.append("url:" + rv["image_url"])
+    main = main_photo_choice(post)
+    if main:
+        out.append(main)
+    prod = post.get("product")
+    if prod:
+        out += ["url:" + u for u in db.jl(prod.get("images"))[:4]]
+        if post["kind"] not in REVIEW_KINDS:
+            out += _library_for_product(prod)
+    uniq = list(dict.fromkeys(out))
+    return uniq[:4 if post["kind"] in REVIEW_KINDS else 5]
+
+
+def video_choices(post: dict) -> list[str]:
+    return db.jl(post.get("video_photos")) or auto_video_choices(post)
+
+
+def resolve_choice(value: str) -> str | None:
+    if value.startswith("lib:"):
+        try:   # the 1600px preview is plenty for a 1080px-wide video; don't wait on iCloud for the original
+            return photos.best_image(value[4:], fetch=False)
         except Exception as e:
-            db.log(f"Video render failed for post #{post['id']}: {e}", "warn")
+            db.log(f"Video: library photo {value[4:]} unavailable ({e})", "warn")
+            return None
+    return value[4:] if value.startswith("url:") and value[4:] else None
+
+
+def video_file(post_id: int) -> str:
+    """The post's newest rendered video, or ''."""
+    d = config.MEDIA_DIR / f"post_{post_id}"
+    if not d.exists():
+        return ""
+    vids = sorted((p for p in d.glob("*.mp4") if not p.name.endswith(".part.mp4")), key=lambda p: p.stat().st_mtime)
+    return str(vids[-1]) if vids else ""
+
+
+def render_video(post: dict) -> str:
+    """Render the post's video (if any platform wants one) and remove the old one. Returns its path or ''."""
+    out_dir = config.MEDIA_DIR / f"post_{post['id']}"
+    if not wants_video(post):
+        for old in out_dir.glob("*.mp4") if out_dir.exists() else []:
+            old.unlink()
+        return ""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"video_{db.utcnow().strftime('%H%M%S')}.mp4"
+    rv = post.get("review") or {}
+    spec = {"photos": [s for s in (resolve_choice(c) for c in video_choices(post)) if s],
+            "style": video_style(post), "headline": post.get("overlay_text") or "",
+            "subline": post.get("title") or (post.get("product") or {}).get("title", "")[:60],
+            "review_text": rv.get("text") if post["kind"] in REVIEW_KINDS else None,
+            "rating": rv.get("rating") or 5, "backdrop": post.get("backdrop") or "garage",
+            "music": video.pick_track(post.get("video_music") or db.get_setting("video_music"), post["id"]),
+            "seed": post["id"]}
+    try:
+        video.render(spec, out)
+    except Exception as e:
+        db.log(f"Video for post #{post['id']} failed ({e}); using a slow zoom on the graphic instead", "warn")
+        try:
+            still = compose.render_to_file(_still_spec(post), "story", out_dir / "video_fallback.jpg")
+            video.still_video(still, out)
+            still.unlink()
+        except Exception as e2:
+            db.log(f"Video render failed for post #{post['id']}: {e2}", "error")
+            return ""
+    for old in out_dir.glob("*.mp4"):
+        if old != out and not old.name.endswith(".part.mp4"):
+            old.unlink()
+    return str(out)
+
+
+# Videos take 10-60 s, so saving a post renders its video in the background, one at a time per post; saving
+# again while one renders queues one more pass with the newest settings.
+_video_cv = threading.Condition()
+_video_wanted: set[int] = set()
+_video_busy: set[int] = set()
+
+
+def queue_video(post_id: int) -> None:
+    with _video_cv:
+        _video_wanted.add(post_id)
+        if post_id in _video_busy:
+            return
+        _video_busy.add(post_id)
+    threading.Thread(target=_video_worker, args=(post_id,), daemon=True).start()
+
+
+def _video_worker(post_id: int) -> None:
+    while True:
+        with _video_cv:
+            if post_id not in _video_wanted:
+                _video_busy.discard(post_id)
+                _video_cv.notify_all()
+                return
+            _video_wanted.discard(post_id)
+        try:
+            post = get_post(post_id)
+            if post:
+                render_video(post)
+        except Exception as e:
+            db.log(f"Video render failed for post #{post_id}: {e}\n{traceback.format_exc()[-600:]}", "error")
+
+
+def videos_rendering() -> list[int]:
+    with _video_cv:
+        return sorted(_video_busy)
+
+
+def wait_for_video(post_id: int, timeout: float = 600) -> None:
+    with _video_cv:
+        _video_cv.wait_for(lambda: post_id not in _video_busy, timeout=timeout)
 
 
 def delete_post(post_id: int) -> None:
@@ -441,20 +619,15 @@ def delete_post(post_id: int) -> None:
 
 
 # ================================================================ publishing
-def _video_for(target) -> str:
-    if not target.get("media_path"):
-        return ""
-    p = config.DATA_DIR / target["media_path"]
-    vids = sorted(p.parent.glob("story_*.mp4"))
-    return str(vids[-1]) if vids else ""
-
-
 def publish_post(post_id: int, only_platform: str | None = None) -> dict:
     s = db.all_settings()
     post = get_post(post_id)
     enabled = set(s.get("enabled_platforms") or [])
     results = {}
     db.run("UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ?", (db.iso(), post_id))
+    wait_for_video(post_id)
+    if wants_video(post) and not video_file(post_id):   # e.g. the app restarted mid-render
+        render_video(post)
     for t in post["targets"]:
         if only_platform and t["platform"] != only_platform:
             continue
@@ -465,6 +638,8 @@ def publish_post(post_id: int, only_platform: str | None = None) -> dict:
             continue
         pub = REGISTRY[t["platform"]]
         local = config.DATA_DIR / (t["media_path"] or "")
+        reel = as_reel(post, t["platform"])
+        what = " (Reel)" if reel else ""
         try:
             if s.get("dry_run"):
                 res_status, ext_id, ext_url = ("sent_to_inbox" if t["platform"] == "tiktok" and s.get("tiktok_mode") == "inbox"
@@ -472,19 +647,22 @@ def publish_post(post_id: int, only_platform: str | None = None) -> dict:
             else:
                 if not pub.connected():
                     raise PublishError(f"{config.PLATFORM_LABELS[t['platform']]} isn't connected")
+                vid = video_file(post_id) if reel or t["platform"] == "tiktok" else ""
+                if reel and not vid:
+                    raise PublishError("The Reel's video isn't rendered — open the post and save it to re-render")
                 media_url = t.get("media_url")
-                if pub.needs_public_url and not media_url:
+                if pub.needs_public_url and not media_url and not reel:
                     media_url = shopify.upload_image(local, alt=post.get("overlay_text") or "")
                     db.run("UPDATE post_targets SET media_url = ? WHERE id = ?", (media_url, t["id"]))
                 res = pub.publish(caption=t["caption"] or "", media_path=str(local), media_url=media_url or "",
                                   title=t.get("title") or "",
                                   link=links.pin_link(post) if t["platform"] == "pinterest" else (t.get("link") or ""),
-                                  video_path=_video_for(t))
+                                  video_path=vid)
                 res_status, ext_id, ext_url = res.status, res.external_id, res.external_url
             db.run("UPDATE post_targets SET status=?, external_id=?, external_url=?, error=NULL, published_at=? "
                    "WHERE id=?", (res_status, ext_id, ext_url, db.iso(), t["id"]))
             results[t["platform"]] = res_status
-            db.log(f"{'[dry run] ' if s.get('dry_run') else ''}Post #{post_id} → {t['platform']}: {res_status}")
+            db.log(f"{'[dry run] ' if s.get('dry_run') else ''}Post #{post_id} → {t['platform']}{what}: {res_status}")
         except Exception as e:
             db.run("UPDATE post_targets SET status='failed', error=? WHERE id=?", (str(e)[:1000], t["id"]))
             results[t["platform"]] = f"failed: {e}"
