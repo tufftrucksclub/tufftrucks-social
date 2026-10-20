@@ -182,7 +182,10 @@ themselves after that.
 sudo cp deploy/tufftrucks-social.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now tufftrucks-social
 ```
-**Windows:** Task Scheduler → Create task → trigger "At log on" → action: start `start.bat`.
+**Windows:** run `start.bat` once to set up `.venv`, then run `C:\GitRepos\Add Tuff Trucks apps to Startup.vbs`. It makes a
+scheduled task, "Tuff Trucks Social", that starts it in the background when you sign in. `start-social-hidden.vbs` also starts
+it through that task, so it never runs inside another program, such as the Claude app, which would close it when that
+program closes or updates. Stop it with `stop-social.vbs`.
 
 The computer needs to be on for posts to go out. If it's off at posting time, the post goes out when it's back
 (the dashboard shows anything that failed, with a Retry button).
