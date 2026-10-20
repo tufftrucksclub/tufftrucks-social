@@ -14,7 +14,7 @@
 <div class="week">
 {% for d in days %}
   <div class="day {{ 'today' if d.is_today }}">
-    <h3><span>{{ d.date.strftime('%a') }}</span><span>{{ d.date.strftime('%b %-d') }}</span></h3>
+    <h3><span>{{ d.date.strftime('%a') }}</span><span>{{ strf(d.date, '%b %-d') }}</span></h3>
     <div class="stack">
     {% for p in d.posts %}{% set show_actions = false %}{% include "_card.html" %}{% else %}<small class="muted">—</small>{% endfor %}
     </div>

@@ -25,7 +25,9 @@ def _load_dotenv(path: Path) -> None:
             continue
         key, val = line.split("=", 1)
         val = val.strip().strip('"').strip("'")
-        os.environ.setdefault(key.strip(), val)
+        # .env wins over anything already in the environment, so a reload picks up edits
+        # (and a stale Windows-level variable can't silently override the file).
+        os.environ[key.strip()] = val
 
 
 _load_dotenv(ROOT / ".env")
@@ -91,8 +93,14 @@ POST_KINDS = {
     "review_photo": "Review photo + backdrop",
     "promo": "Promo / sale",
     "behind_scenes": "Behind the scenes",
+    "showcase": "Truck showcase (your photo)",
     "custom": "Custom",
 }
+
+# Where photos come from besides Shopify/Etsy (see app/sources/photos.py)
+ICLOUD_APPLE_ID = env("ICLOUD_APPLE_ID")
+ICLOUD_PASSWORD = env("ICLOUD_PASSWORD")   # optional; lets an expired session log back in on its own
+ICLOUD_CHINA = env("ICLOUD_CHINA", "0") == "1"
 
 # ------------------------------------------------- defaults for DB settings
 DEFAULT_SETTINGS: dict = {
@@ -106,6 +114,8 @@ DEFAULT_SETTINGS: dict = {
     "enabled_platforms": ["instagram", "facebook", "tiktok", "pinterest", "x"],
     "tiktok_mode": "inbox",       # inbox = drafts you finish in the app; direct = auto-post (needs TikTok audit)
     "x_allow_links": False,       # links on X cost ~13x more per post
+    "pinterest_links": "store",   # what pins link to: store | etsy (the matching Etsy listing) | none — see app/links.py
+    "etsy_matches": {},           # Shopify product id -> Etsy listing id you picked ("" = no link)
     "pinterest_board_id": "",
     # Cadence
     "posts_per_week": 5,
@@ -130,6 +140,17 @@ DEFAULT_SETTINGS: dict = {
     "accent_color_2": "#FF3D7F",
     "watermark": "TUFFTRUCKS.CLUB",
     "timezone": "America/New_York",
+    # Videos (TikTok + Reels) — see app/studio/video.py
+    "reels_platforms": ["instagram", "facebook"],  # post the video as a Reel here instead of the image
+    "video_music": "random",      # random = a track from data/music each video; none = silent
+    "video_cta": "LINK IN BIO",   # big text on the video's end card, above your web address
+    # Photo library (iCloud + folders)
+    "icloud_apple_id": "",
+    "photos_album": "",           # blank = whole library; or an album / shared album name, e.g. "Tuff Trucks"
+    "photos_days": 90,            # only look at photos taken in the last N days
+    "photos_max_per_scan": 150,   # new photos downloaded per scan
+    "photos_rate_per_scan": 36,   # photos Claude rates per scan (6 per call)
+    "photos_folders": [],         # extra local folders to scan (iCloud for Windows' folder is found on its own)
 }
 
 

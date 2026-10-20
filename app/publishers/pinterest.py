@@ -7,9 +7,24 @@ import base64
 from datetime import date, timedelta
 from urllib.parse import urlencode
 
-from .. import config, db
+import re
+
+from .. import config, db, links
 from . import oauth
 from .base import Metrics, PublishError, Publisher, Result, check, request
+
+
+# boards:write is needed to pin to a board, even an existing one
+SCOPES = ["boards:read", "boards:write", "pins:read", "pins:write", "user_accounts:read"]
+
+
+_URL = re.compile(r"(https?://|www\.)\S+|\b[\w-]+\.(club|com|shop)(/\S*)?", re.I)
+
+
+def _no_urls(text: str) -> str:
+    """Drop web addresses (and the domain written out) from pin text, tidying the spaces left behind."""
+    lines = [re.sub(r"[ \t]{2,}", " ", _URL.sub("", ln)).strip().rstrip(" -–—|·:") for ln in (text or "").splitlines()]
+    return "\n".join(lines).strip()
 
 
 def _api() -> str:
@@ -25,10 +40,22 @@ class Pinterest(Publisher):
     def connected(self) -> bool:
         return bool(db.get_token("pinterest"))
 
+    def missing_scopes(self) -> list[str]:
+        """Permissions the saved login lacks. A login from before the scope was recorded counts as missing
+        boards:write, which older versions of this app didn't ask for."""
+        tok = db.get_token("pinterest") or {}
+        if not tok:
+            return []
+        have = set((tok.get("scope") or "boards:read,pins:read,pins:write,user_accounts:read").replace(" ", ",").split(","))
+        return [s for s in SCOPES if s not in have]
+
     def status_note(self) -> str:
+        if self.missing_scopes():
+            return "Click Reconnect: the app now needs permission to " + ", ".join(self.missing_scopes()) + "."
         if self.connected() and not db.get_setting("pinterest_board_id"):
             return "Pick a board below."
-        return "Pins stay private until Pinterest grants Standard access to your app."
+        return ("Needs Standard access from Pinterest before it can create pins (Trial access can't). "
+                "Apply at developers.pinterest.com with a screen recording of connecting here.")
 
     def _basic(self) -> str:
         raw = f"{config.PINTEREST_APP_ID}:{config.PINTEREST_APP_SECRET}".encode()
@@ -39,7 +66,7 @@ class Pinterest(Publisher):
         return "https://www.pinterest.com/oauth/?" + urlencode({
             "client_id": config.PINTEREST_APP_ID, "redirect_uri": oauth.redirect_uri("pinterest"),
             "response_type": "code", "state": state,
-            "scope": "boards:read,pins:read,pins:write,user_accounts:read"})
+            "scope": ",".join(SCOPES)})
 
     def exchange(self, code: str) -> None:
         r = request("POST", f"{_api()}/oauth/token", headers={"Authorization": self._basic()},
@@ -66,12 +93,22 @@ class Pinterest(Publisher):
         board = db.get_setting("pinterest_board_id")
         if not board:
             raise PublishError("Choose a Pinterest board on the Settings page")
+        if links.pin_mode() != "store":
+            # Pinterest blocks tufftrucks.club: keep web addresses out of the text (the agent passes the Etsy link, or none)
+            caption, title = _no_urls(caption), _no_urls(title)
         body = {"board_id": board, "title": (title or caption)[:100], "description": caption[:500],
                 "alt_text": (title or caption)[:500],
                 "media_source": {"source_type": "image_url", "url": media_url}}
         if link:
             body["link"] = link
         r = request("POST", f"{_api()}/pins", json=body, headers={"Authorization": f"Bearer {self._token()}"})
+        if r.status_code == 401 and "scope" in r.text.lower():
+            raise PublishError("Pinterest needs more permissions — Settings → Pinterest → Reconnect, then retry.")
+        if r.status_code == 403 and "trial access" in r.text.lower():
+            raise PublishError("Your Pinterest app is still on Trial access, which can't create real pins. Apply for "
+                               "Standard access at developers.pinterest.com (My Apps → your app) with a screen recording "
+                               "of Settings → Pinterest → Connect. Until it's approved, untick Pinterest in "
+                               "Settings → Platforms so posts don't show this failure.")
         pin = check(r, "Pinterest pin")
         return Result("published", pin["id"], f"https://www.pinterest.com/pin/{pin['id']}/")
 

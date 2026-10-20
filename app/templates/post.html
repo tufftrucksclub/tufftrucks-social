@@ -37,7 +37,7 @@
     <div class="panel">
       <div class="tabs" id="tabs">
         {% for t in post.targets %}<button type="button" data-src="{{ media_url(t.media_path) }}" data-plat="{{ t.platform }}" class="{{ 'on' if loop.first }}">{{ labels[t.platform] }}</button>{% endfor %}
-        {% if video %}<button type="button" data-video="{{ video }}">TikTok video</button>{% endif %}
+        {% if video or video_rendering %}<button type="button" data-video="{{ video }}" data-rendering="{{ 1 if video_rendering else '' }}">Video{{ ' ⏳' if video_rendering }}</button>{% endif %}
       </div>
       <div class="preview" id="preview">
         {% if post.targets and post.targets[0].media_path %}<img src="{{ media_url(post.targets[0].media_path) }}" alt="preview">{% else %}<span class="muted">No graphic yet — save to render.</span>{% endif %}
@@ -50,15 +50,69 @@
       <div class="field"><label>Small line (product / fitment)</label><input type="text" name="subline" value="{{ post.title or '' }}" maxlength="80"></div>
       <div class="field"><label>Backdrop</label>
         <select name="backdrop">{% for k, v in styles.items() %}<option value="{{ k }}" {{ 'selected' if k == post.backdrop }}>{{ v }}</option>{% endfor %}</select>
-        <div class="hint">Want more control? Open this photo in the <a href="/studio">Studio</a>.</div></div>
+        <div class="hint">Want more control? Open this photo in the <a href="/studio{{ '?photo_id=' ~ (post.photo_id|urlencode) if post.photo_id else '' }}">Studio</a>.</div></div>
+      {% if photo %}<div class="field"><label>Photo placement</label>
+        <select name="placement">{% for k, v in placements.items() %}<option value="{{ k }}" {{ 'selected' if k == (post.placement or 'auto') }}>{{ v }}</option>{% endfor %}</select>
+        <div class="hint">“Cut out” replaces the photo's background with the backdrop above.</div></div>{% endif %}
       {% if photo %}<div class="hint" style="margin-top:10px">Photo: <a href="{{ img_src(photo) }}" target="_blank">source image ↗</a></div>{% endif %}
+      {% if photo_groups %}
+      <details class="newbg photopick" style="margin-top:12px" {{ 'open' if not photo }}>
+        <summary>Choose another photo</summary>
+        {% for group, items in photo_groups.items() %}
+        <div class="hint" style="margin:8px 0 4px">{{ group }}</div>
+        <div class="swatches">{% for c in items %}
+          <label title="{{ c.label }}"><input type="radio" name="photo_choice" value="{{ c.value }}" {{ 'checked' if c.value == photo_current }}>
+            <span><img src="{{ c.src }}" alt="" loading="lazy"><em>{{ c.label }}</em></span></label>
+        {% endfor %}</div>
+        {% endfor %}
+        <div class="hint" id="photopick-hint">Pick one, then <b>Save changes</b> to re-render the graphics with it.</div>
+      </details>
+      {% endif %}
       {% if post.review %}
       <hr><h3>From the Etsy review</h3>
       <div class="stars">{{ '★' * post.review.rating }}{{ '☆' * (5 - post.review.rating) }}</div>
       <p class="quote">“{{ post.review.text }}”</p>
       <small>{{ post.review.product_title }}</small>
       {% endif %}
+      {% if post.photo %}<hr><h3>From your photos</h3>
+      <small>{{ post.photo.n.description or post.photo.filename }}{% if post.photo.score %} · Claude: {{ post.photo.score }}/10{% endif %}</small>
+      {% if post.photo.n.privacy_issue %}<div class="why">⚑ May show a plate, face or personal info.</div>{% endif %}
+      {% endif %}
       {% if post.product %}<hr><small>Product: <a href="{{ post.product.url }}" target="_blank">{{ post.product.title }}</a> {% if post.product.price %}· {{ post.product.price }}{% endif %}</small>{% endif %}
+    </div>
+
+    <div class="panel">
+      <h2>Video <small>for TikTok{{ ' and Instagram/Facebook Reels' if reel_on }}</small></h2>
+      {% if video_rendering %}<div class="why" style="margin-bottom:8px">⏳ Rendering the video… this page refreshes when it's ready.</div>
+      {% elif not wants_video %}<div class="hint" style="margin-bottom:8px">Nothing on this post takes a video yet: tick TikTok{{ ', or post as a Reel below' if has_meta }}.</div>{% endif %}
+      <div class="grid g2">
+        <div class="field"><label>Style</label>
+          <select name="video_style"><option value="">Automatic — {{ video_styles[video_style].split(' — ')[0] if not post.video_style else 'pick for me' }}</option>
+            {% for k, v in video_styles.items() %}<option value="{{ k }}" {{ 'selected' if k == post.video_style }}>{{ v }}</option>{% endfor %}</select></div>
+        <div class="field"><label>Music</label>
+          <select name="video_music"><option value="">Settings default ({{ 'a random track' if s.video_music != 'none' and tracks else 'no music' }})</option>
+            <option value="none" {{ 'selected' if post.video_music == 'none' }}>No music</option>
+            {% for t in tracks %}<option value="{{ t }}" {{ 'selected' if t == post.video_music }}>{{ t }}</option>{% endfor %}</select>
+          {% if not tracks %}<div class="hint">No tracks yet — add some in <a href="/settings#video">Settings → Video</a>.</div>{% endif %}</div>
+      </div>
+      {% if has_meta %}<input type="hidden" name="reels_shown" value="1">
+      <label class="check"><input type="checkbox" name="reels" {{ 'checked' if reel_on }}> Post the video as a Reel on Instagram / Facebook (instead of the image)</label>{% endif %}
+      {% if photo_groups %}
+      <details class="newbg photopick vpick" style="margin-top:10px">
+        <summary>Photos in the video ({{ video_picked|length }}){{ ' — picked automatically' if not video_custom }}</summary>
+        <input type="hidden" name="video_photos_mode" id="vmode" value="{{ 'custom' if video_custom else 'auto' }}">
+        <input type="hidden" name="video_photos" id="vphotos" value="{{ video_picked|tojson|forceescape }}">
+        {% for group, items in photo_groups.items() %}
+        <div class="hint" style="margin:8px 0 4px">{{ group }}</div>
+        <div class="swatches">{% for c in items %}
+          <label title="{{ c.label }}" data-v="{{ c.value }}"><input type="checkbox" class="vp">
+            <span><img src="{{ c.src }}" alt="" loading="lazy"><em>{{ c.label }}</em></span></label>
+        {% endfor %}</div>
+        {% endfor %}
+        <div class="row" style="margin-top:8px"><button type="button" class="sm" id="vauto" data-auto="{{ video_auto|tojson|forceescape }}">Use automatic picks</button>
+          <span class="hint" id="vhint">Click photos in the order you want them; the first one opens the video. Then <b>Save changes</b>.</span></div>
+      </details>
+      {% endif %}
     </div>
   </div>
 
@@ -91,6 +145,10 @@
       {% if t.platform == 'pinterest' %}<div class="field"><label>Pin title</label><input type="text" name="title_pinterest" value="{{ t.title or '' }}" maxlength="100"></div>{% endif %}
       <textarea id="c_{{ t.platform }}" name="caption_{{ t.platform }}" style="min-height:{{ 90 if t.platform in ('x','tiktok') else 150 }}px">{{ t.caption or '' }}</textarea>
       {% if t.platform == 'tiktok' and s.tiktok_mode == 'inbox' %}<div class="hint">Inbox mode: TikTok doesn't accept a caption with drafts, so copy this one when you post from the app.</div>{% endif %}
+      {% if t.platform == 'pinterest' %}<div class="hint">This pin links to:
+        {% if pin_link %}<a href="{{ pin_link }}" target="_blank">{{ 'your Etsy listing' if pin_mode == 'etsy' else pin_link }} ↗</a>
+        {% elif pin_mode == 'etsy' %}nothing — this product has no Etsy match (set one on the <a href="/products">Products</a> page)
+        {% else %}nothing (Settings → Platforms){% endif %}</div>{% endif %}
       {% if t.platform == 'x' and not s.x_allow_links %}<div class="hint">Links are off for X (they cost ~13× more per post there).</div>{% endif %}
       {% if t.error %}<div class="err">{{ t.error }}</div>{% endif %}
       {% set m = metrics[t.id] %}
@@ -112,8 +170,37 @@
 const tabs = document.querySelectorAll('#tabs button'), pv = document.getElementById('preview');
 tabs.forEach(b => b.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('on')); b.classList.add('on');
-  pv.innerHTML = b.dataset.video ? `<video src="${b.dataset.video}" controls autoplay muted loop playsinline></video>`
-                                 : (b.dataset.src ? `<img src="${b.dataset.src}" alt="">` : '<span class="muted">Not rendered yet</span>');
+  if ('video' in b.dataset) {
+    pv.innerHTML = (b.dataset.rendering ? '<div class="why" style="margin-bottom:6px">⏳ A new video is rendering — this is the previous one.</div>' : '')
+      + (b.dataset.video ? `<video src="${b.dataset.video}" controls autoplay loop playsinline></video>` : '<span class="muted">Rendering…</span>');
+  } else pv.innerHTML = b.dataset.src ? `<img src="${b.dataset.src}" alt="">` : '<span class="muted">Not rendered yet</span>';
+}));
+// video photo picker: the order you click is the order in the video
+const vInput = document.getElementById('vphotos');
+if (vInput) {
+  let order = JSON.parse(vInput.value || '[]');
+  const boxes = [...document.querySelectorAll('.vpick label[data-v]')];
+  const paint = () => boxes.forEach(l => {
+    const i = order.indexOf(l.dataset.v);
+    l.querySelector('input').checked = i >= 0;
+    if (i >= 0) l.dataset.n = i + 1; else delete l.dataset.n;
+  });
+  const changed = () => {
+    vInput.value = JSON.stringify(order); paint();
+    document.getElementById('vhint').innerHTML = '<span class="why">Changed — click <b>Save changes</b> to re-render the video.</span>';
+  };
+  boxes.forEach(l => l.querySelector('input').addEventListener('change', () => {
+    const v = l.dataset.v, i = order.indexOf(v);
+    if (i >= 0) order.splice(i, 1); else if (order.length < 7) order.push(v);
+    document.getElementById('vmode').value = 'custom'; changed();
+  }));
+  document.getElementById('vauto').addEventListener('click', () => {
+    order = JSON.parse(document.getElementById('vauto').dataset.auto); document.getElementById('vmode').value = 'auto'; changed();
+  });
+  paint();
+}
+document.querySelectorAll('input[name=photo_choice]').forEach(r => r.addEventListener('change', () => {
+  document.getElementById('photopick-hint').innerHTML = '<span class="why">New photo picked — click <b>Save changes</b> to use it.</span>';
 }));
 document.querySelectorAll('.count').forEach(c => {
   const ta = document.getElementById(c.dataset.for), max = +c.dataset.max;

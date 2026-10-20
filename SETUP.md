@@ -9,7 +9,8 @@ Raspberry Pi (same idea as the order desk) and you use it from any browser on yo
 2. Has Claude rate every new review photo (is it sharp, does it show the product, is a plate or face visible?).
 3. Sunday afternoon: Claude reviews last month's results, then plans next week — which products, which reviews,
    which backdrop, which day — and writes separate copy for Instagram, Facebook, TikTok, Pinterest and X.
-4. Renders every graphic in each platform's size (plus a short slow-zoom video for TikTok).
+4. Renders every graphic in each platform's size, plus a 6–20 second video from the post's photos for TikTok and
+   Instagram / Facebook Reels (see **Videos** below).
 5. Product spotlights auto-approve. Review posts, promos, and anything Claude isn't sure about wait for your OK.
 6. Publishes on schedule, then pulls likes/comments/shares/saves so next week's plan leans toward what worked.
 
@@ -84,6 +85,20 @@ Test on **Settings → Shopify → Test upload**.
 Read-only; no Etsy login needed. Etsy's API doesn't give buyer names, and only includes the buyer's photo when
 their privacy settings allow it.
 
+### 4b. iCloud Photos (optional — your own photos)
+
+Open the **Photos** page → enter your Apple ID and password → type the 6-digit code Apple sends to your iPhone.
+The password is used once and not saved; the login is kept in `data/icloud/` and lasts about two months, after
+which the Photos page asks you to log in again. On a Pi with no browser, run `python -m app.tools icloud-login`.
+
+- **Advanced Data Protection** on? Turn on *Access iCloud Data on the Web* first (iPhone → Settings → your name → iCloud).
+- Best results: make a **“Tuff Trucks” album** on your phone, drop good shots in, and put that album name on the
+  Photos page — then only those get scanned. Otherwise it looks at the last 90 days of the whole library.
+- Have **iCloud for Windows** syncing photos? Its folder is scanned automatically too; add any other folders on the
+  Photos page.
+
+Claude rates each new photo (about 1–2¢ each, six per call) and flags plates, faces and dull backgrounds.
+
 ---
 
 ## 5. Facebook + Instagram
@@ -133,7 +148,8 @@ are forced to private. If you later pass the audit, switch Settings → TikTok t
 ## 8. X
 
 1. **developer.x.com** → create a Project + App → **User authentication settings**: OAuth 2.0, type
-   **Web App**, permissions **Read and write**, callback `http://localhost:8420/oauth/x/callback`.
+   **Web App**, permissions **Read and write**, callback `http://127.0.0.1:8420/oauth/x/callback`
+   (X doesn't accept `localhost`; Settings shows the exact URL to paste). Website URL: `https://tufftrucks.club`.
 2. Copy the OAuth 2.0 **Client ID** and **Client Secret** into `.env` → **Settings → Connect X**.
 3. Add credits in the X developer console (pay-per-use). Roughly 1.5¢ per post, ~20¢ if the post contains a
    link — so links are off for X by default (Settings → Platforms to change). Stats reads cost about half a cent
@@ -167,12 +183,16 @@ themselves after that.
 sudo cp deploy/tufftrucks-social.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now tufftrucks-social
 ```
-**Windows:** Task Scheduler → Create task → trigger "At log on" → action: start `start.bat`.
+**Windows:** run `start.bat` once to set up `.venv`, then run `C:\GitRepos\Add Tuff Trucks apps to Startup.vbs`. It makes a
+scheduled task, "Tuff Trucks Social", that starts it in the background when you sign in. `start-social-hidden.vbs` also starts
+it through that task, so it never runs inside another program, such as the Claude app, which would close it when that
+program closes or updates. Stop it with `stop-social.vbs`.
 
 The computer needs to be on for posts to go out. If it's off at posting time, the post goes out when it's back
 (the dashboard shows anything that failed, with a Retry button).
 
-**Raspberry Pi tip:** background removal and video rendering are slow on a Pi. Set `REMBG_MODEL=u2netp` in `.env`
+**Raspberry Pi tip:** background removal and video rendering are slow on a Pi (a video takes 15–60 s on a PC,
+several minutes on a Pi). Set `REMBG_MODEL=u2netp` in `.env`
 for faster cut-outs; planning runs in the background either way.
 
 ---
@@ -184,8 +204,27 @@ for faster cut-outs; planning runs in the background either way.
   time, approve. Editing an auto-approved post puts it back in your queue.
 - **Reviews** — every Etsy review with Claude's photo score. *Photo + backdrop post* puts the buyer's picture on a
   new backdrop with their quote; *Quote card* makes a text graphic. A ⚑ means a plate/face might be visible.
-- **Studio** — any product or review photo on any backdrop, every size at once. Upload your own backdrops
+- **Photos** — your iCloud / folder photos, best first, with Claude's score and what's in each one. *Make a post*
+  turns one into a truck showcase (always waits for your OK). *New background…* swaps a parking lot or garage for
+  something better and saves it as a new photo:
+  - **Backdrop** (free, instant): the truck is cut out and set on any Studio backdrop, including scenery photos you
+    upload as backdrops.
+  - **AI scene** (needs `OPENAI_API_KEY`, ~20¢): a realistic scene is painted around the truck, matched to its light
+    and angle. The truck's own pixels are pasted back on top, so your products are never altered.
+  Photos with a dull background and a clean subject are cut out onto a backdrop automatically when they become posts.
+- **Studio** — any product, review or library photo on any backdrop, every size at once. Placement *Cut out*
+  replaces the photo's background with the backdrop; *Full photo* fills the frame. Upload your own backdrops
   (shop, trail, truck meet) and they show up as styles.
+- **Videos** — every post gets a short vertical video made from its photos: each photo zooms and pans, the
+  headline pops in as the hook, the product name or review quote animates in, and it ends on a "Link in bio" card
+  with your web address. TikTok always gets the video; Instagram and Facebook get it as a **Reel** instead of the
+  image (Settings → Video; each post can override it). Three styles: *Quick cuts* (fast, punchy — product
+  spotlights), *Showcase* (slow, smooth — builds and behind the scenes) and *Review* (the customer's quote types
+  in over their photo). Claude picks one when it plans; change it on the post page, where you can also pick which
+  photos go in and in what order. Product listing photos on a white background are cut out onto the backdrop.
+  **Music:** drop royalty-free tracks (MP3 / M4A / WAV) into `data/music` and each video gets one (or choose one per
+  post). Only use music you have the rights to — YouTube Audio Library and Pixabay Music are free. TikTok's trending
+  sounds can't be added by apps, but in inbox mode you can add one in the TikTok app before you post.
 - **Insights** — numbers by platform and post type; **Ask Claude what's working** writes a plain-English review
   that next week's planner reads.
 
@@ -197,6 +236,7 @@ but a quick "mind if we share your pic?" message on Etsy is the safe, friendly m
 | Problem | Fix |
 |---|---|
 | Instagram: "media URL" / "could not fetch" | Run Settings → Shopify → Test upload; the image must be on a public link. |
+| Reel fails / "video isn't rendered" | Open the post and **Save changes** to re-render the video; check the activity log for ffmpeg errors. |
 | Facebook: permissions error | The system-user token is missing `pages_manage_posts` or the Page asset. Regenerate it. |
 | TikTok draft never arrives | Update the TikTok app (inbox drafts need a recent version); check you approved `video.upload`. |
 | Pinterest pins don't show up publicly | Still on Trial access — request Standard access. |

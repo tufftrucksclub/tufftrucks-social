@@ -10,7 +10,10 @@ from .. import config, db
 
 
 def redirect_uri(platform: str) -> str:
-    return f"{config.PUBLIC_BASE_URL}/oauth/{platform}/callback"
+    base = config.PUBLIC_BASE_URL
+    if platform == "x":  # X rejects "localhost" callbacks; it wants the IP form for local apps
+        base = base.replace("://localhost", "://127.0.0.1")
+    return f"{base}/oauth/{platform}/callback"
 
 
 def new_state(platform: str, pkce: bool = False) -> tuple[str, str | None]:
@@ -39,10 +42,12 @@ def store(platform: str, body: dict, **extra) -> dict:
         data["refresh_token"] = body["refresh_token"]
     if body.get("expires_in"):
         data["expires_at"] = db.iso(db.utcnow() + timedelta(seconds=int(body["expires_in"])))
+    if body.get("scope"):  # what the account actually granted, so Settings can spot a needed reconnect
+        data["scope"] = body["scope"]
     if body.get("refresh_token_expires_in"):
         data["refresh_expires_at"] = db.iso(db.utcnow() + timedelta(seconds=int(body["refresh_token_expires_in"])))
     old = db.get_token(platform) or {}
-    for k in ("open_id", "username", "user_id"):
+    for k in ("open_id", "username", "user_id", "scope"):
         if k in old and k not in data:
             data[k] = old[k]
     if "refresh_token" not in data and old.get("refresh_token"):

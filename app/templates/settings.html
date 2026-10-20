@@ -23,6 +23,8 @@
       <h2>Accounts</h2>
       <div class="conn"><b>Shopify</b><span>{% if shopify_ok %}<span class="pill ok">Set in .env</span> Products, best sellers, and image hosting for posts{% else %}<span class="pill warn">Not set</span> Add SHOPIFY_* to .env{% endif %}</span>
         {% if shopify_ok %}<form class="inline" method="post" action="/settings/test-shopify-upload"><button class="sm">Test upload</button></form>{% else %}<span></span>{% endif %}</div>
+      <div class="conn"><b>iCloud Photos</b><span>{% if ic.connected %}<span class="pill ok">Connected</span> {{ ic.apple_id }}{% elif ic.apple_id %}<span class="pill warn">Log in again</span> {{ ic.apple_id }}{% else %}<span class="pill">Not connected</span> Your own photos, rated by Claude{% endif %}</span>
+        <a class="btn sm" href="/photos">Photos page</a></div>
       <div class="conn"><b>Etsy</b><span>{% if etsy_ok %}<span class="pill ok">Set in .env</span> Reviews + listings (read-only){% else %}<span class="pill warn">Not set</span> Add ETSY_* to .env{% endif %}</span><span></span></div>
       {% for c in conns %}
       <div class="conn">
@@ -66,12 +68,36 @@
         </select>
         <div class="hint">Changing this means reconnecting TikTok so it can ask for the right permission.</div></div>
       <label class="check"><input type="checkbox" name="x_allow_links" {{ 'checked' if s.x_allow_links }}> Allow links in X posts (~$0.20 per post instead of ~$0.015)</label>
+      <div class="field"><label>Pins link to</label>
+        <select name="pinterest_links">{% for k, v in pin_modes.items() %}<option value="{{ k }}" {{ 'selected' if k == pin_mode }}>{{ v }}</option>{% endfor %}</select>
+        <div class="hint">Pinterest blocks tufftrucks.club, so “Etsy listing” links each pin to the same product on Etsy.
+          Check the matches on the <a href="/products">Products</a> page; products without one go out with no link.</div></div>
       <div class="field"><label>Pinterest board</label>
         {% if boards %}
         <select name="pinterest_board_id"><option value="">— choose —</option>
           {% for b in boards %}<option value="{{ b.id }}" {{ 'selected' if b.id == s.pinterest_board_id }}>{{ b.name }}</option>{% endfor %}</select>
         {% else %}<input type="text" name="pinterest_board_id" value="{{ s.pinterest_board_id }}" placeholder="Connect Pinterest to pick a board">
         {% if board_err %}<div class="err">{{ board_err }}</div>{% endif %}{% endif %}</div>
+      <button class="primary" style="margin-top:12px">Save</button>
+    </form>
+
+    <form class="panel" method="post" action="/settings" id="video">
+      <input type="hidden" name="section" value="video">
+      <h2>Video</h2>
+      <div class="hint">Every post gets a short video made from its photos: TikTok always uses it, and Instagram / Facebook
+        can post it as a Reel instead of the image (Reels reach far more people than photo posts). Each post can override this.</div>
+      <div class="row" style="margin-top:8px">{% for p in ['instagram', 'facebook'] %}<label class="check"><input type="checkbox" name="reels_{{ p }}" {{ 'checked' if p in s.reels_platforms }}> Reels on {{ labels[p] }}</label>{% endfor %}</div>
+      <div class="field" style="margin-top:10px"><label>Music</label>
+        <select name="video_music">
+          <option value="random" {{ 'selected' if s.video_music != 'none' }}>A random track from my music folder</option>
+          <option value="none" {{ 'selected' if s.video_music == 'none' }}>No music</option>
+        </select>
+        <div class="hint">Put royalty-free tracks (MP3 / M4A / WAV) in <code>{{ music_dir }}</code> —
+          {% if tracks %}{{ tracks|length }} there now: {{ tracks|join(', ') }}{% else %}it's empty right now{% endif %}.
+          Only use music you have the rights to (YouTube Audio Library, Pixabay Music, or a paid library).
+          TikTok's trending sounds can't be added by apps, but in inbox mode you can add one in the TikTok app before posting.</div></div>
+      <div class="field"><label>End-card text</label><input type="text" name="video_cta" maxlength="40" value="{{ s.video_cta }}">
+        <div class="hint">Big text on the last second of every video, above your watermark ({{ s.watermark or 'web address' }}).</div></div>
       <button class="primary" style="margin-top:12px">Save</button>
     </form>
 

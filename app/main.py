@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import traceback
 from datetime import date, datetime, timedelta
@@ -13,11 +14,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import agent, brain, config, db, scheduler
+from . import agent, brain, config, db, links, scheduler
 from .publishers import REGISTRY
 from .publishers import oauth as oauth_mod
-from .sources import etsy, shopify
-from .studio import backdrops, compose
+from .sources import etsy, icloud, shopify
+from .sources import photos as photos_mod
+from .studio import backdrops, bgswap, compose, video as video_mod
 
 BASE = Path(__file__).parent
 app = FastAPI(title="Tuff Trucks Social")
@@ -46,13 +48,22 @@ def run_bg(name: str, label: str, fn, *args, **kw) -> None:
 
 
 def running_jobs() -> list[str]:
-    return [j["label"] for j in _jobs.values() if j.get("running")]
+    return ([j["label"] for j in _jobs.values() if j.get("running")]
+            + [f"Rendering the video for post #{i}" for i in agent.videos_rendering()])
 
 
 # ------------------------------------------------------------------ helpers
+_NO_PAD = re.compile(r"%-([a-zA-Z])")
+
+
+def strf(dt, fmt: str) -> str:
+    """strftime that understands %-d / %-I (no leading zero) everywhere — Windows doesn't."""
+    return dt.strftime(_NO_PAD.sub(lambda m: dt.strftime("%" + m.group(1)).lstrip("0") or "0", fmt))
+
+
 def fmt_local(iso_s: str | None, fmt: str = "%a %b %-d · %-I:%M %p") -> str:
     dt = db.parse_iso(iso_s)
-    return dt.astimezone(agent.tz()).strftime(fmt) if dt else "—"
+    return strf(dt.astimezone(agent.tz()), fmt) if dt else "—"
 
 
 def media_url(rel: str | None) -> str:
@@ -120,7 +131,7 @@ def posts_where(where: str, params: tuple = (), order: str = "scheduled_at") -> 
     return out
 
 
-templates.env.globals.update(thumb=thumb)
+templates.env.globals.update(thumb=thumb, strf=strf)
 
 
 # ----------------------------------------------------------------- startup
@@ -141,6 +152,30 @@ def media(rel: str):
     if not str(p).startswith(str(config.DATA_DIR.resolve())) or not p.is_file():
         raise HTTPException(404)
     return FileResponse(p, headers={"Cache-Control": "no-cache"})
+
+
+# ------------------------------------------------- Store Manager badge
+@app.get("/api/todo")
+def api_todo():
+    """What needs Daryl, for the Social button in Store Manager (same idea as Accounting's /api/todo).
+    No login on this app, so plain CORS is enough for Store Manager on :3000 to read it."""
+    soon = db.iso(db.utcnow() + timedelta(hours=24))
+    waiting = db.q1("SELECT COUNT(*) n FROM posts WHERE status='needs_approval'")["n"]
+    due_soon = db.q1("SELECT COUNT(*) n FROM posts WHERE status='needs_approval' AND scheduled_at <= ?", (soon,))["n"]
+    problems = db.q1("SELECT COUNT(*) n FROM posts WHERE status IN ('failed','partial')")["n"]
+    drafts = db.q1("""SELECT COUNT(*) n FROM post_targets WHERE platform='tiktok' AND status='sent_to_inbox'
+                      AND published_at >= ?""", (db.iso(db.utcnow() - timedelta(days=3)),))["n"]
+    items = []
+    if waiting:
+        items.append({"text": f"{waiting} post{'s' if waiting != 1 else ''} waiting for your OK"
+                      + (f" ({due_soon} due within a day)" if due_soon else ""), "urgent": bool(due_soon)})
+    if problems:
+        items.append({"text": f"{problems} post{'s' if problems != 1 else ''} failed to publish", "urgent": True})
+    if drafts:
+        items.append({"text": f"{drafts} TikTok draft{'s' if drafts != 1 else ''} to finish in the app", "urgent": False})
+    return JSONResponse({"count": waiting + problems + drafts, "urgent": any(i["urgent"] for i in items),
+                         "items": items},
+                        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- dashboard
@@ -230,7 +265,7 @@ def calendar(request: Request, start: str = ""):
                      "posts": [p for p in posts if db.parse_iso(p["scheduled_at"]).astimezone(agent.tz()).date() == d]})
     return templates.TemplateResponse(request, "calendar.html", ctx(
         request, nav="calendar", days=days, prev=(d0 - timedelta(days=7)).isoformat(),
-        next=(d0 + timedelta(days=7)).isoformat(), week_label=f"{d0:%b %-d} – {(d0 + timedelta(days=6)):%b %-d, %Y}"))
+        next=(d0 + timedelta(days=7)).isoformat(), week_label=f"{strf(d0, '%b %-d')} – {strf(d0 + timedelta(days=6), '%b %-d, %Y')}"))
 
 
 # ---------------------------------------------------------------- posts
@@ -241,17 +276,63 @@ def post_detail(request: Request, post_id: int):
         raise HTTPException(404)
     sched = db.parse_iso(post["scheduled_at"])
     local_val = sched.astimezone(agent.tz()).strftime("%Y-%m-%dT%H:%M") if sched else ""
-    video = ""
-    tt = next((t for t in post["targets"] if t["platform"] == "tiktok"), None)
-    if tt:
-        v = agent._video_for(tt)
-        if v:
-            video = media_url(str(Path(v).relative_to(config.DATA_DIR)))
+    v = agent.video_file(post_id)
+    video = media_url(str(Path(v).relative_to(config.DATA_DIR))) if v else ""
     metrics = {t["id"]: db.q1("SELECT * FROM metrics WHERE target_id=? ORDER BY id DESC LIMIT 1", (t["id"],))
                for t in post["targets"]}
     return templates.TemplateResponse(request, "post.html", ctx(
         request, nav="calendar", post=post, local_val=local_val, styles=backdrops.list_styles(),
-        video=video, metrics=metrics, photo=agent._pick_photo(post)))
+        video=video, metrics=metrics, photo=agent._pick_photo(post), placements=PLACEMENTS,
+        pin_link=links.pin_link(post), pin_mode=links.pin_mode(),
+        photo_groups=photo_choices(post, extra=agent.video_choices(post)), photo_current=current_photo_choice(post),
+        wants_video=agent.wants_video(post), video_rendering=post_id in agent.videos_rendering(),
+        video_styles=video_mod.STYLES, video_style=agent.video_style(post), tracks=video_mod.music_tracks(),
+        video_picked=agent.video_choices(post), video_auto=agent.auto_video_choices(post), video_custom=bool(db.jl(post.get("video_photos"))),
+        has_meta=any(t["platform"] in ("instagram", "facebook") for t in post["targets"]),
+        reel_on=any(agent.as_reel(post, t["platform"]) for t in post["targets"])))
+
+
+def photo_choices(post: dict, extra: list[str] = ()) -> dict[str, list[dict]]:
+    """Photos you can swap into a post (or use in its video), by group: the product's listing photos, the review's
+    photo, your library. Values are 'url:<src>' (listing / review / other image) or 'lib:<photo id>'."""
+    groups: dict[str, list[dict]] = {}
+    seen = set()
+
+    def add(group, value, src, label):
+        if value not in seen and src:
+            seen.add(value)
+            groups.setdefault(group, []).append({"value": value, "src": src, "label": label})
+
+    if post.get("product"):
+        for i, u in enumerate(db.jl(post["product"]["images"])):
+            add("Product photos", "url:" + u, u, f"Listing photo {i + 1}")
+    rv = post.get("review") or {}
+    if rv.get("image_url"):
+        add("Review photo", "url:" + rv["image_url"], rv["image_url"], "Customer's photo")
+    src = post.get("source_image")
+    if src and not post.get("photo_id") and "url:" + src not in seen:  # e.g. picked in the Studio
+        groups = {"Current photo": [{"value": "url:" + src, "src": img_src(src), "label": "In use now"}], **groups}
+    lib = []
+    if post.get("photo"):  # the photo in use, plus its new-background versions
+        root = post["photo"].get("parent_id") or post["photo"]["id"]
+        lib += db.q("SELECT * FROM photos WHERE id IN (?, ?) OR parent_id = ? ORDER BY id = ? DESC, created_at",
+                    (post["photo"]["id"], root, root, post["photo"]["id"]))
+    lib += db.q("SELECT * FROM photos WHERE hidden = 0 AND score >= 6 "
+                "ORDER BY used_at IS NOT NULL, score DESC, taken_at DESC LIMIT 40")
+    for r in lib:
+        n = db.jl(r["notes"], {}) or {}
+        label = (f"★{r['score']} " if r["score"] else "") + (n.get("description") or r["filename"] or "")[:50]
+        add("Your photos", "lib:" + r["id"], img_src(str(config.DATA_DIR / r["local_path"])), label)
+    for v in extra:  # e.g. photos the video uses that aren't in the lists above
+        if v.startswith("lib:") and (r := photos_mod.get(v[4:])):
+            add("Your photos", v, img_src(str(config.DATA_DIR / r["local_path"])), r["filename"] or "Library photo")
+        elif v.startswith("url:"):
+            add("Other photos", v, img_src(v[4:]), "Photo")
+    return groups
+
+
+def current_photo_choice(post: dict) -> str:
+    return agent.main_photo_choice(post)
 
 
 @app.post("/posts/{post_id}/save")
@@ -264,10 +345,22 @@ async def post_save(request: Request, post_id: int):
     sched_iso = None
     if sched:
         sched_iso = db.iso(datetime.fromisoformat(sched).replace(tzinfo=agent.tz()))
-    old_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"))
-    db.run("UPDATE posts SET overlay_text=?, backdrop=?, title=?, scheduled_at=?, updated_at=? WHERE id=?",
+    old_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"),
+                  post.get("photo_id"))
+    old_video = (post.get("video_style"), post.get("video_photos"), post.get("video_music"), post.get("reels"),
+                 tuple(t["platform"] for t in post["targets"]))
+    placement = form.get("placement") if form.get("placement") in PLACEMENTS else post.get("placement")
+    photo_id, source_image = post.get("photo_id"), post.get("source_image")
+    choice = form.get("photo_choice") or ""
+    if choice and choice != current_photo_choice(post):
+        if choice.startswith("lib:") and photos_mod.get(choice[4:]):
+            photo_id, source_image = choice[4:], None
+        elif choice.startswith("url:") and choice[4:]:
+            photo_id, source_image = None, choice[4:]
+    db.run("UPDATE posts SET overlay_text=?, backdrop=?, title=?, scheduled_at=?, placement=?, photo_id=?, "
+           "source_image=?, updated_at=? WHERE id=?",
            (form.get("overlay_text", ""), form.get("backdrop", "garage"), form.get("subline", ""),
-            sched_iso, db.iso(), post_id))
+            sched_iso, placement, photo_id, source_image, db.iso(), post_id))
     chosen = set(form.getlist("platforms"))
     for p in config.PLATFORMS:
         t = next((t for t in post["targets"] if t["platform"] == p), None)
@@ -275,22 +368,56 @@ async def post_save(request: Request, post_id: int):
             db.run("INSERT INTO post_targets(post_id, platform, status) VALUES(?, ?, 'pending')", (post_id, p))
         elif p not in chosen and t and t["status"] in ("pending", "failed"):
             db.run("DELETE FROM post_targets WHERE id=?", (t["id"],))
+    save_video_options(post_id, form)
     for t in db.q("SELECT * FROM post_targets WHERE post_id=?", (post_id,)):
         if f"caption_{t['platform']}" in form:
             db.run("UPDATE post_targets SET caption=?, title=? WHERE id=?",
                    (form.get(f"caption_{t['platform']}"), form.get(f"title_{t['platform']}", t["title"]), t["id"]))
     post = agent.get_post(post_id)
-    new_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"))
+    new_visual = (post["overlay_text"], post["backdrop"], post["title"], post.get("source_image"), post.get("placement"),
+                  post.get("photo_id"))
+    new_video = (post.get("video_style"), post.get("video_photos"), post.get("video_music"), post.get("reels"),
+                 tuple(t["platform"] for t in post["targets"]))
     needs_media = new_visual != old_visual or any(not t.get("media_path") for t in post["targets"])
     if needs_media:
-        agent.render_media(post)
+        agent.render_media(post, with_video=False)
+    needs_video = (needs_media or new_video != old_video
+                   or (agent.wants_video(post) and not agent.video_file(post_id)))
+    if needs_video:
+        agent.queue_video(post_id)
     # edits to an auto-approved post put it back in your hands
     if post["status"] == "approved" and post["approval"] == "auto":
         db.run("UPDATE posts SET status='needs_approval', approval=NULL WHERE id=?", (post_id,))
     action = form.get("action", "save")
     if action == "approve":
         return post_approve(post_id)
-    return back(f"/posts/{post_id}", "Saved." + (" Graphics re-rendered." if needs_media else ""))
+    return back(f"/posts/{post_id}", "Saved." + (" Graphics re-rendered." if needs_media else "")
+                + (" The video is rendering — this page refreshes when it's ready." if needs_video else ""))
+
+
+def save_video_options(post_id: int, form) -> None:
+    if "video_style" not in form:
+        return
+    post = agent.get_post(post_id)
+    style = form.get("video_style") if form.get("video_style") in video_mod.STYLES else None
+    music = form.get("video_music") or None
+    if music not in (None, "none") and music not in video_mod.music_tracks():
+        music = post.get("video_music")
+    picked = None
+    if form.get("video_photos_mode") == "custom":
+        try:
+            picked = [c for c in json.loads(form.get("video_photos") or "[]")
+                      if isinstance(c, str) and c[:4] in ("lib:", "url:")][:7] or None
+        except ValueError:
+            picked = None
+    reels = post.get("reels")
+    if "reels_shown" in form:
+        want = form.get("reels") == "on"
+        default = any(agent.as_reel(post, p, setting_only=True) for p in ("instagram", "facebook")
+                      if any(t["platform"] == p for t in post["targets"]))
+        reels = None if want == default else int(want)
+    db.run("UPDATE posts SET video_style=?, video_music=?, video_photos=?, reels=? WHERE id=?",
+           (style, music, json.dumps(picked) if picked else None, reels, post_id))
 
 
 @app.post("/posts/{post_id}/approve")
@@ -350,7 +477,7 @@ def post_tiktok_done(post_id: int):
 @app.post("/posts/new")
 def post_new(kind: str = Form(...), product_id: str = Form(""), review_id: str = Form(""),
              backdrop: str = Form(""), headline: str = Form(""), source_image: str = Form(""),
-             when: str = Form("")):
+             when: str = Form(""), photo_id: str = Form(""), placement: str = Form("")):
     sched = None
     if when:
         sched = datetime.fromisoformat(when).replace(tzinfo=agent.tz())
@@ -362,9 +489,13 @@ def post_new(kind: str = Form(...), product_id: str = Form(""), review_id: str =
             r = db.q1("SELECT photo_notes FROM reviews WHERE id=?", (review_id,))
             notes = db.jl(r and r["photo_notes"], {}) or {}
         backdrop = notes.get("backdrop") if notes.get("backdrop") in backdrops.list_styles() else "garage"
+    if photo_id and not headline:
+        ph = photos_mod.get(photo_id)
+        headline = ((ph or {}).get("n") or {}).get("headline_idea") or ""
     post_id = agent.create_post(kind=kind, product_id=product_id or None, review_id=review_id or None,
                                 angle="", headline=headline, backdrop=backdrop, scheduled_at=sched,
-                                created_by="manual", source_image=source_image or None)
+                                created_by="manual", source_image=source_image or None,
+                                photo_id=photo_id or None, placement=placement if placement in PLACEMENTS else None)
     run_bg(f"redraft{post_id}", f"Drafting post #{post_id}", agent.build_post, post_id, True)
     return back(f"/posts/{post_id}", "Drafting captions and graphics… refresh in ~20 seconds.")
 
@@ -396,25 +527,57 @@ def review_hide(rid: str, hide: str = Form("1")):
 def products_page(request: Request, q: str = ""):
     rows = db.q("SELECT * FROM products WHERE status='active' AND (? = '' OR title LIKE ?) "
                 "ORDER BY COALESCE(last_featured_at,'0') ASC, title", (q, f"%{q}%"))
-    return templates.TemplateResponse(request, "products.html", ctx(request, nav="products", products=rows, q=q))
+    etsy_rows = links.etsy_listings()
+    picks = db.get_setting("etsy_matches") or {}
+    for r in rows:
+        if r["source"] == "shopify":
+            r["etsy"] = links.etsy_match(r, etsy_rows)
+            r["etsy_pick"] = picks.get(r["id"])          # None = automatic
+            r["etsy_auto"] = links.auto_match(r, etsy_rows)
+    return templates.TemplateResponse(request, "products.html", ctx(request, nav="products", products=rows, q=q,
+                                                                     etsy_rows=etsy_rows, pin_mode=links.pin_mode()))
+
+
+@app.post("/products/{pid:path}/etsy-match")
+def product_etsy_match(pid: str, etsy_id: str = Form("auto"), q: str = Form("")):
+    picks = dict(db.get_setting("etsy_matches") or {})
+    if etsy_id == "auto":
+        picks.pop(pid, None)
+    else:
+        picks[pid] = etsy_id if etsy_id != "none" else ""
+    db.set_setting("etsy_matches", picks)
+    return back("/products" + (f"?q={quote(q)}" if q else ""), "Etsy link saved.")
 
 
 # ---------------------------------------------------------------- studio
+PLACEMENTS = {"auto": "Auto", "cutout": "Cut out — new background", "full": "Full photo (fills the frame)",
+              "framed": "Framed photo"}
+
+
 @app.get("/studio", response_class=HTMLResponse)
-def studio(request: Request, product_id: str = "", review_id: str = ""):
+def studio(request: Request, product_id: str = "", review_id: str = "", photo_id: str = "", img: int = 0):
     photos = []
+    for r in db.q("SELECT * FROM photos WHERE hidden=0 AND (score IS NULL OR score >= 5) "
+                  "ORDER BY source='edit' DESC, COALESCE(score,0) DESC, taken_at DESC LIMIT 150"):
+        n = db.jl(r["notes"], {}) or {}
+        label = (f"★{r['score']} " if r["score"] else "") + (n.get("description") or r["filename"] or "")[:60]
+        photos.append({"src": str(config.DATA_DIR / r["local_path"]), "label": label,
+                        "group": "New backgrounds" if r["source"] == "edit" else "Your photos",
+                        "placement": n.get("placement") or "", "backdrop": n.get("suggested_backdrop") or ""})
     for p in db.q("SELECT id, title, images FROM products WHERE status='active' ORDER BY title LIMIT 200"):
-        for i, u in enumerate(db.jl(p["images"])[:4]):
+        imgs = db.jl(p["images"])
+        for i, u in enumerate(imgs if p["id"] == product_id else imgs[:4]):
             photos.append({"src": u, "label": p["title"][:60] + (f" ({i + 1})" if i else ""), "group": "Products"})
     for r in db.q("SELECT id, text, image_url FROM reviews WHERE image_url IS NOT NULL AND image_url != '' AND hidden=0 LIMIT 100"):
         photos.append({"src": r["image_url"], "label": "Review: " + (r["text"] or "")[:50], "group": "Review photos"})
-    for f in sorted((config.DATA_DIR / "uploads").glob("*")) if (config.DATA_DIR / "uploads").exists() else []:
-        photos.append({"src": str(f), "label": f.name, "group": "Your uploads"})
     preselect, pre_layout = "", ""
-    if product_id:
+    if photo_id:
+        ph = photos_mod.get(photo_id)
+        preselect = str(config.DATA_DIR / ph["local_path"]) if ph else ""
+    elif product_id:
         p = db.q1("SELECT images FROM products WHERE id = ?", (product_id,))
         imgs = db.jl(p["images"]) if p else []
-        preselect = imgs[0] if imgs else ""
+        preselect = imgs[img if 0 <= img < len(imgs) else 0] if imgs else ""
     elif review_id:
         r = db.q1("SELECT image_url FROM reviews WHERE id = ?", (review_id,))
         preselect, pre_layout = (r["image_url"] if r else "") or "", "review_photo"
@@ -422,7 +585,9 @@ def studio(request: Request, product_id: str = "", review_id: str = ""):
         preselect = photos[0]["src"]
     return templates.TemplateResponse(request, "studio.html", ctx(request, nav="studio", photos=photos,
                                                          styles=backdrops.list_styles(), formats=compose.FORMATS,
-                                                         preselect=preselect, preselect_layout=pre_layout))
+                                                         preselect=preselect, preselect_layout=pre_layout,
+                                                         placements=PLACEMENTS, bg_options=bgswap.options(),
+                                                         ai_bg=bgswap.ai_available()))
 
 
 @app.get("/studio/preview")
@@ -442,14 +607,23 @@ async def studio_upload(file: UploadFile = File(...), kind: str = Form("photo"))
     target.mkdir(parents=True, exist_ok=True)
     name = Path(file.filename or "upload.jpg").name.replace(" ", "_")
     (target / name).write_bytes(await file.read())
+    if kind != "backdrop":  # uploads join your photo library, so they can get new backgrounds too
+        pid = photos_mod.add_file(target / name)
+        if pid:
+            return back(f"/studio?photo_id={quote(pid)}", f"Uploaded {name}.")
     return back("/studio", f"Uploaded {name}" + (" as a backdrop." if kind == "backdrop" else "."))
 
 
 @app.post("/studio/save")
 def studio_save(photo: str = Form(""), backdrop: str = Form("garage"), headline: str = Form(""),
-                kind: str = Form("product_spotlight"), when: str = Form("")):
+                kind: str = Form("product_spotlight"), when: str = Form(""), placement: str = Form("auto")):
     product_id = None
     review_id = None
+    lib = photos_mod.by_path(photo) if photo else None
+    if lib:
+        return post_new(kind="showcase" if kind == "product_spotlight" else kind, product_id="", review_id="",
+                        backdrop=backdrop, headline=headline, source_image="", when=when, photo_id=lib["id"],
+                        placement=placement if placement != "auto" else "")
     if photo:
         for p in db.q("SELECT id, images FROM products"):
             if photo in db.jl(p["images"]):
@@ -460,7 +634,181 @@ def studio_save(photo: str = Form(""), backdrop: str = Form("garage"), headline:
             review_id = r["id"]
             kind = "review_photo"
     return post_new(kind=kind, product_id=product_id or "", review_id=review_id or "", backdrop=backdrop,
-                    headline=headline, source_image=photo, when=when)
+                    headline=headline, source_image=photo, when=when, photo_id="",
+                    placement=placement if placement != "auto" else "")
+
+
+@app.post("/studio/background")
+def studio_background(photo: str = Form(...), choice: str = Form(...), custom: str = Form("")):
+    lib = photos_mod.by_path(photo)
+    if not lib:
+        return back("/studio", "New backgrounds work on photos from your library (iCloud / folders / uploads "
+                               "aren't in it yet). Pick one under “Your photos”.")
+    return photo_background(lib["id"], choice=choice, custom=custom, then=f"/studio?photo_id={quote(lib['id'])}")
+
+
+# ---------------------------------------------------------------- photo library
+PHOTO_VIEWS = [("best", "Best picks"), ("new_bg", "Needs a new background"), ("all", "All"),
+               ("unrated", "Not rated yet"), ("edits", "New backgrounds"), ("used", "Used"), ("hidden", "Hidden")]
+
+
+@app.get("/photos", response_class=HTMLResponse)
+def photos_page(request: Request, show: str = "best", tags: str = ""):
+    photos_mod.backfill_tags()
+    want = photos_mod.clean_tags(tags.split(","))
+    where = {"best": "hidden=0 AND score >= 7 AND source != 'edit'",
+             "new_bg": "hidden=0 AND json_extract(notes, '$.background') = 'mundane' AND source != 'edit'",
+             "all": "hidden=0 AND source != 'edit'", "unrated": "hidden=0 AND score IS NULL",
+             "edits": "hidden=0 AND source = 'edit'", "used": "used_at IS NOT NULL",
+             "hidden": "hidden=1"}.get(show, "hidden=0")
+    # every chosen tag must be on the photo
+    where += "".join(" AND EXISTS (SELECT 1 FROM json_each(photos.tags) WHERE value = ?)" for _ in want)
+    rows = db.q(f"SELECT * FROM photos WHERE {where} ORDER BY "
+                + ("created_at DESC" if show == "edits" else "COALESCE(score,0) DESC, taken_at DESC") + " LIMIT 240",
+                tuple(want))
+    for r in rows:
+        r["n"] = db.jl(r.get("notes"), {}) or {}
+        r["tag_list"] = photos_mod.tags_of(r)
+    counts = {"total": db.q1("SELECT COUNT(*) n FROM photos WHERE source != 'edit'")["n"],
+              "unrated": db.q1("SELECT COUNT(*) n FROM photos WHERE score IS NULL AND hidden=0")["n"]}
+    return templates.TemplateResponse(request, "photos.html", ctx(
+        request, nav="photos", photos=rows, show=show, views=PHOTO_VIEWS, counts=counts,
+        want=want, all_tags=photos_mod.all_tags(),
+        ic=icloud.status(), folders=photos_mod.folders(), auto_folder=photos_mod.icloud_windows_folder(),
+        bg_options=bgswap.options(), ai_bg=bgswap.ai_available(), can_cut=compose.can_cut_out(),
+        showcase_kinds={k: v for k, v in config.POST_KINDS.items() if k not in agent.REVIEW_KINDS}))
+
+
+@app.post("/photos/scan")
+def photos_scan():
+    run_bg("photos", "Scanning your photos", agent.sync_photos)
+    return back("/photos", "Looking for new photos — Claude rates them as they come in.")
+
+
+@app.post("/photos/settings")
+def photos_settings(album: str = Form(""), days: int = Form(90), max_per_scan: int = Form(150),
+                    rate_per_scan: int = Form(36), folders: str = Form("")):
+    db.set_setting("photos_album", album.strip())
+    db.set_setting("photos_days", max(1, days))
+    db.set_setting("photos_max_per_scan", max(1, min(max_per_scan, 1000)))
+    db.set_setting("photos_rate_per_scan", max(0, min(rate_per_scan, 300)))
+    db.set_setting("photos_folders", [f.strip() for f in folders.splitlines() if f.strip()])
+    return back("/photos", "Photo settings saved.")
+
+
+@app.post("/photos/icloud/login")
+def icloud_login(apple_id: str = Form(...), password: str = Form(...)):
+    try:
+        res = icloud.start_login(apple_id, password)
+    except Exception as e:
+        return back("/photos", f"iCloud login failed: {e}")
+    if res == "code":
+        return back("/photos", "Apple sent a 6-digit code to your iPhone / Mac — enter it below.")
+    run_bg("photos", "Scanning your photos", agent.sync_photos)
+    return back("/photos", "iCloud connected. Scanning your photos…")
+
+
+@app.post("/photos/icloud/code")
+def icloud_code(code: str = Form(...)):
+    try:
+        ok = icloud.finish_login(code)
+    except Exception as e:
+        return back("/photos", f"iCloud: {e}")
+    if not ok:
+        if icloud.waiting_for_code():
+            return back("/photos", "Apple didn't accept that code, so it sent a new one — enter the newest code.")
+        return back("/photos", "Apple didn't accept that code. Enter your password again to get a new one.")
+    run_bg("photos", "Scanning your photos", agent.sync_photos)
+    return back("/photos", "iCloud connected. Scanning your photos…")
+
+
+@app.post("/photos/icloud/resend")
+def icloud_resend():
+    try:
+        res = icloud.resend_code()
+    except Exception as e:
+        icloud.cancel_login()
+        return back("/photos", f"iCloud: {e}")
+    if res == "ok":
+        run_bg("photos", "Scanning your photos", agent.sync_photos)
+        return back("/photos", "iCloud connected. Scanning your photos…")
+    return back("/photos", "Apple is sending a new code — use the newest one.")
+
+
+@app.post("/photos/icloud/cancel")
+def icloud_cancel():
+    icloud.cancel_login()
+    return back("/photos", "Login cancelled — start again whenever you're ready.")
+
+
+@app.post("/photos/icloud/logout")
+def icloud_logout():
+    icloud.logout()
+    return back("/photos", "Disconnected iCloud. Photos already pulled in stay here.")
+
+
+@app.post("/photos/bulk")
+async def photos_bulk(request: Request):
+    form = await request.form()
+    ids = form.getlist("ids")
+    show = form.get("show") or "best"
+    keep = f"/photos?show={quote(show)}" + (f"&tags={quote(form.get('tags'))}" if form.get("tags") else "")
+    if form.get("action") == "tag":
+        tag = (form.get("tag") or "").strip()
+        if not tag or not ids:
+            return back(keep, "Pick some photos and type a tag first.")
+        n = photos_mod.add_tag(ids, tag)
+        return back(keep, f"Tagged {n} photo{'s' if n != 1 else ''} “{photos_mod.clean_tags([tag])[0]}”.")
+    hide = 1 if form.get("action") == "hide" else 0
+    with db.tx() as c:
+        c.executemany("UPDATE photos SET hidden=? WHERE id=?", [(hide, i) for i in ids])
+    n = len(ids)
+    return back(keep, f"{'Hid' if hide else 'Restored'} {n} photo{'s' if n != 1 else ''}."
+                + (" The planner won't use them." if hide else ""))
+
+
+@app.post("/photos/{pid:path}/tags")
+def photo_tags(pid: str, tags: str = Form("[]")):
+    """Replace a photo's tags (the cards save edits here without reloading the page)."""
+    if not photos_mod.get(pid):
+        raise HTTPException(404)
+    try:
+        lst = json.loads(tags)
+    except ValueError:
+        lst = tags.split(",")
+    return JSONResponse({"tags": photos_mod.set_tags(pid, lst if isinstance(lst, list) else [])})
+
+
+@app.post("/photos/{pid:path}/hide")
+def photo_hide(pid: str, hide: str = Form("1")):
+    db.run("UPDATE photos SET hidden=? WHERE id=?", (1 if hide == "1" else 0, pid))
+    return back(f"/photos?show={'hidden' if hide != '1' else 'best'}",
+                "Hidden — the planner won't use it." if hide == "1" else "Restored.")
+
+
+@app.post("/photos/{pid:path}/background")
+def photo_background(pid: str, choice: str = Form(...), custom: str = Form(""), then: str = Form("/photos?show=edits")):
+    if choice == "scene:custom":
+        if not custom.strip():
+            return back(then, "Describe the scene you want first.")
+        choice = "scene:" + custom.strip()[:300]
+    if not photos_mod.get(pid):
+        raise HTTPException(404)
+    if choice.startswith("scene:") and not bgswap.ai_available():
+        return back(then, "AI scenes need OPENAI_API_KEY in .env (and background removal installed).")
+    run_bg(f"bg{pid}", "Making a new background", bgswap.replace_background, pid, choice)
+    note = "about a minute" if choice.startswith("scene:") else "a few seconds"
+    return back("/photos?show=edits" if then.startswith("/photos") else then,
+                f"Making the new background — takes {note}. It shows up under “New backgrounds”.")
+
+
+@app.post("/photos/{pid:path}/post")
+def photo_post(pid: str, kind: str = Form("showcase"), placement: str = Form("")):
+    if not photos_mod.get(pid):
+        raise HTTPException(404)
+    return post_new(kind=kind if kind in config.POST_KINDS and kind not in agent.REVIEW_KINDS else "showcase",
+                    product_id="", review_id="", backdrop="", headline="", source_image="", when="",
+                    photo_id=pid, placement=placement)
 
 
 # ---------------------------------------------------------------- insights
@@ -495,7 +843,8 @@ def settings_page(request: Request):
     return templates.TemplateResponse(request, "settings.html", ctx(
         request, nav="settings", conns=connections(), boards=boards, board_err=board_err, meta=meta,
         shopify_ok=shopify.configured(), etsy_ok=etsy.configured(), redirect=oauth_mod.redirect_uri,
-        day_keys=agent.DAY_KEYS))
+        ic=icloud.status(check=False), pin_modes=links.PIN_LINK_MODES, pin_mode=links.pin_mode(),
+        day_keys=agent.DAY_KEYS, tracks=video_mod.music_tracks(), music_dir=str(video_mod.music_dir())))
 
 
 @app.post("/settings")
@@ -512,8 +861,14 @@ async def settings_save(request: Request):
         db.set_setting("enabled_platforms", [p for p in config.PLATFORMS if form.get(f"enable_{p}") == "on"])
         db.set_setting("tiktok_mode", form.get("tiktok_mode", "inbox"))
         db.set_setting("x_allow_links", form.get("x_allow_links") == "on")
+        if form.get("pinterest_links") in links.PIN_LINK_MODES:
+            db.set_setting("pinterest_links", form.get("pinterest_links"))
         if form.get("pinterest_board_id") is not None:
             db.set_setting("pinterest_board_id", form.get("pinterest_board_id", ""))
+    elif section == "video":
+        db.set_setting("reels_platforms", [p for p in ("instagram", "facebook") if form.get(f"reels_{p}") == "on"])
+        db.set_setting("video_music", "none" if form.get("video_music") == "none" else "random")
+        db.set_setting("video_cta", (form.get("video_cta") or "").strip()[:40])
     elif section == "cadence":
         db.set_setting("posts_per_week", int(form.get("posts_per_week") or 5))
         db.set_setting("review_posts_per_week", int(form.get("review_posts_per_week") or 2))

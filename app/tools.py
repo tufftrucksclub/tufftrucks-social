@@ -7,6 +7,8 @@
   plan [--replace]   Plan + build next week's posts now
   publish-due        Publish anything approved and due
   test-claude        Make one tiny Claude call to confirm the API key works
+  icloud-login       Log in to iCloud Photos here in the terminal (handy on a Pi with no browser)
+  photos             Scan iCloud / folders for new photos and have Claude rate them
 """
 from __future__ import annotations
 
@@ -30,6 +32,11 @@ def check() -> None:
             print(f"    connected to {d['shop']['name']} — {d['productsCount']['count']} products")
         except Exception as e:
             print(f"    ✗ {e}")
+    from .sources import icloud, photos
+    ic = icloud.status()
+    print(f"{ok(ic['connected'])} iCloud Photos: {ic['apple_id'] or 'not connected'}"
+          + (f" — {ic['error']}" if ic["error"] else ""))
+    print(f"{ok(bool(photos.folders()))} Photo folders: {', '.join(map(str, photos.folders())) or 'none'}")
     print(f"{ok(etsy.configured())} Etsy (shop {config.ETSY_SHOP_ID or 'ETSY_SHOP_ID not set'})")
     if etsy.configured():
         try:
@@ -75,6 +82,27 @@ def test_claude() -> None:
     print(m.content[0].text)
 
 
+def icloud_login() -> None:
+    import getpass
+    from .sources import icloud
+    aid = input(f"Apple ID [{icloud.apple_id()}]: ").strip() or icloud.apple_id()
+    svc = icloud._service(aid, getpass.getpass("Apple ID password (not saved): "))
+    if svc.requires_2fa:
+        if getattr(svc, "security_key_names", None):
+            print("Touch your security key…")
+            svc.confirm_security_key(svc.fido2_devices[0])
+        else:
+            svc.request_2fa_code()
+            if not svc.validate_2fa_code(input("6-digit code from your Apple device: ").strip()):
+                sys.exit("That code didn't work.")
+        if not svc.is_trusted_session:
+            svc.trust_session()
+    elif svc.requires_2sa:
+        sys.exit("This Apple ID uses old two-step verification; turn on two-factor authentication for it.")
+    db.set_setting("icloud_apple_id", aid)
+    print(f"Connected — {len(svc.photos.all)} photos in the library. The web app will use this login.")
+
+
 def main(argv: list[str]) -> None:
     if not argv:
         print(__doc__)
@@ -95,6 +123,10 @@ def main(argv: list[str]) -> None:
         print(agent.publish_due(), "post(s) processed")
     elif cmd == "test-claude":
         test_claude()
+    elif cmd == "icloud-login":
+        icloud_login()
+    elif cmd == "photos":
+        print(agent.sync_photos())
     else:
         print(__doc__)
 

@@ -1,7 +1,7 @@
 # Tuff Trucks Social
 
 Self-hosted social media manager for tufftrucks.club: plans a week of posts with Claude, turns Shopify products
-and Etsy reviews into graphics with new backdrops, writes captions per platform, and posts to Instagram,
+and Etsy reviews into graphics with new backdrops and short videos (TikTok + Reels), writes captions per platform, and posts to Instagram,
 Facebook, TikTok, Pinterest and X — auto-posting routine product spotlights and holding review posts for your OK.
 
 **Start here → [SETUP.md](SETUP.md)**
@@ -10,9 +10,11 @@ Facebook, TikTok, Pinterest and X — auto-posting routine product spotlights an
 run.py                 start the web app (http://localhost:8420)
 app/agent.py           sync → plan → draft → render → approve → publish → measure
 app/brain.py           Claude prompts (weekly plan, captions, review-photo rating, performance review)
-app/studio/            graphics: backdrops, layouts, TikTok video
+app/studio/            graphics: backdrops, layouts
+app/studio/video.py    short videos for TikTok + Reels (moving photos, animated text, music from data/music)
 app/publishers/        Instagram, Facebook, TikTok, Pinterest, X
-app/sources/           Shopify + Etsy
+app/sources/           Shopify, Etsy, iCloud Photos + local photo folders
+app/studio/bgswap.py   new backgrounds for photos (cut-out onto a backdrop, or AI scene)
 app/scheduler.py       background jobs
 python -m app.tools    command-line helpers (check, sync, plan, meta-ids, etsy-shop-id…)
 ```
